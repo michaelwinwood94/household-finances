@@ -13,20 +13,25 @@
 </head>
 <body>
   <header class="topbar">
-    <h1>Household Finances</h1>
+    <div class="brand"><span class="brand-mark" aria-hidden="true">$</span> Household Finances</div>
     <button id="signout" class="link hidden" type="button">Sign out</button>
   </header>
 
   <nav id="tabs" class="tabs hidden" aria-label="Sections">
-    <button data-view="dashboard" class="active">Dashboard</button>
-    <button data-view="budget">Budget</button>
-    <button data-view="transactions">Transactions</button>
-    <button data-view="sort">To sort</button>
-    <button data-view="import">Import</button>
-    <button data-view="bills">Bills &amp; income</button>
-    <button data-view="debts">Debts</button>
-    <button data-view="shared">Shared costs</button>
-    <button data-view="setup">Setup</button>
+    <div class="tabs-main">
+      <button data-view="dashboard" class="active">Home</button>
+      <button data-view="budget">Budget</button>
+      <button data-view="bills">Bills</button>
+      <button data-view="income">Income</button>
+      <button data-view="debts">Debts</button>
+      <button data-view="transactions">Transactions</button>
+      <button data-view="sort">To sort <span id="sort-badge" class="badge hidden"></span></button>
+    </div>
+    <div class="tabs-more">
+      <button data-view="import">Import</button>
+      <button data-view="shared">Shared</button>
+      <button data-view="setup">Setup</button>
+    </div>
   </nav>
 
   <main id="main">

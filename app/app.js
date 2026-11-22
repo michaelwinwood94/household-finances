@@ -1,6 +1,7 @@
 import { createClient } from 'https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2/+esm';
 import { SUPABASE_URL, SUPABASE_PUBLISHABLE_KEY } from './config.js';
 import { parseBankCsv, parseWestpacActivity, splitAccounts } from './csv.js';
+import { columnChart, hbarChart, SERIES, moneyRound, moneyCompact } from './charts.js';
 
 const sb = createClient(SUPABASE_URL, SUPABASE_PUBLISHABLE_KEY);
 const $ = (s, el = document) => el.querySelector(s);
@@ -180,6 +181,7 @@ const TABLES = {
 };
 
 function cell(def, row, k) {
+  if (VIRTUAL[k]) return VIRTUAL[k].html(row);
   const f = def.fields.find(x => x.k === k); const v = row[k];
   if (!f) return esc(v);
   if (f.type === 'ref') return esc(refName(f.ref, v));
@@ -187,10 +189,49 @@ function cell(def, row, k) {
   if (f.type === 'date') return esc(fmtDate(v));
   if (f.type === 'number' && /amount|balance|payment|budget/.test(k)) return money(v);
   if (k === 'hardship_status') return `<span class="pill ${v === 'approved' ? 'good' : v === 'to_request' ? 'warn' : ''}">${esc(label(v))}</span>`;
+  if (k === 'creditor') return `<b>${esc(v)}</b>${row.priority <= 1 ? ' <span class="pill bad">priority</span>' : ''}${row.status !== 'active' ? ` <span class="pill">${esc(label(row.status))}</span>` : ''}`;
   if (k === 'priority' && def === TABLES.debts) return `<span class="pill ${v <= 1 ? 'bad' : v <= 2 ? 'warn' : ''}">${esc(v)}</span>`;
   if (k === 'paid_by') return v === 'partner' ? esc(cache.settings?.partner_label || 'Ex-partner') : 'Me';
   return esc(label(v));
 }
+
+// Two views of the same bills/income table, with friendlier columns
+const FREQ_WORD = { once: 'once', weekly: 'week', fortnightly: 'fortnight', monthly: 'month', quarterly: 'quarter', yearly: 'year' };
+TABLES.bills = { ...TABLES.recurring_items, table: 'recurring_items', title: 'Your bills', order: ['next_due'], addTitle: 'bill',
+  columns: ['name', 'amount_freq', 'per_month', 'next', 'share'],
+  footer: rows => {
+    const act = rows.filter(r => r.is_active && !r.debt_id);
+    return { per_month: `<b>${money(sum(act, r => r.amount * PER_MONTH[r.frequency]))}</b><br><span class="hint">your share ${money(sum(act, r => r.amount * PER_MONTH[r.frequency] * r.my_share_pct / 100))}</span>`,
+             name: `<b>Total per month</b><br><span class="hint">loan repayments are counted under Debts</span>` };
+  } };
+TABLES.income = { ...TABLES.recurring_items, table: 'recurring_items', title: 'Your income', order: ['next_due'], addTitle: 'income',
+  fields: TABLES.recurring_items.fields.filter(f => f.k !== 'debt_id').map(f => f.k === 'match_text' ? { ...f, hint: 'When an imported deposit contains this, it is marked received and the date moves on' } : f),
+  columns: ['name', 'amount_freq', 'per_month', 'next', 'share'],
+  footer: rows => {
+    const act = rows.filter(r => r.is_active);
+    return { per_month: `<b>${money(sum(act, r => r.amount * PER_MONTH[r.frequency]))}</b><br><span class="hint">yours ${money(sum(act, r => r.amount * PER_MONTH[r.frequency] * r.my_share_pct / 100))}</span>`,
+             name: `<b>Total per month</b>` };
+  } };
+TABLES.debts.columns = ['creditor', 'current_balance', 'arrears_amount', 'monthly', 'hardship_status', 'share'];
+TABLES.debts.headers = { creditor: 'Owed to', current_balance: 'Balance', arrears_amount: 'Overdue', hardship_status: 'Hardship' };
+TABLES.debts.footer = rows => {
+  const act = rows.filter(r => r.status === 'active');
+  return { creditor: '<b>Total</b> <span class="hint">(active)</span>', current_balance: `<b>${money(sum(act, r => r.current_balance))}</b>`,
+    arrears_amount: money(sum(act, r => r.arrears_amount)), monthly: `<b>${money(sum(act, r => r.min_payment * PER_MONTH[r.payment_frequency || 'monthly']))}</b>` };
+};
+const VIRTUAL = {
+  amount_freq: { label: 'Amount', num: true, html: r => `${money(r.amount)} <span class="hint">/ ${FREQ_WORD[r.frequency] || r.frequency}</span>` },
+  per_month: { label: 'Per month', num: true, html: r => r.debt_id ? '<span class="hint">in Debts</span>' : money(r.amount * PER_MONTH[r.frequency]) },
+  monthly: { label: 'Per month', num: true, html: r => r.min_payment ? money(r.min_payment * PER_MONTH[r.payment_frequency || 'monthly']) : '<span class="hint">—</span>' },
+  next: { label: 'Next due', html: r => {
+    if (!r.is_active) return '<span class="pill">paused</span>';
+    const d = daysFromToday(r.next_due);
+    const pill = d < 0 ? `<span class="pill bad">${r.direction === 'in' ? 'late' : 'overdue'}</span>` : d === 0 ? '<span class="pill warn">today</span>' : d <= 7 ? `<span class="pill warn">in ${d} day${d === 1 ? '' : 's'}</span>` : '';
+    return `${esc(fmtDate(r.next_due))} ${pill}`; } },
+  share: { label: 'Split', html: r => {
+    const p = Number(r.my_share_pct ?? 100), who = cache.settings?.partner_label || 'partner';
+    return `<span class="nowrap">${p === 100 ? 'All yours' : p === 0 ? `All ${esc(who)}'s` : `${p}% yours`}</span>`; } },
+};
 
 // ---------- categories: picker with "+ New category…" ----------
 function catOptions(selected, { blank = '— choose —' } = {}) {
@@ -241,9 +282,10 @@ function wireCatSelect(sel, onPick, kindHint) {
 // ---------- generic add / edit dialog ----------
 function openForm(key, row = null, fixed = {}) {
   const def = TABLES[key];
+  const table = def.table || key;
   return new Promise(resolve => {
     const dlg = document.createElement('dialog');
-    const fieldsHtml = def.fields.map(f => {
+    const fieldsHtml = def.fields.filter(f => !(f.k in fixed)).map(f => {
       let val = row ? row[f.k] : (typeof f.default === 'function' ? f.default() : f.default);
       const req = f.required ? 'required' : '';
       const hint = f.hint ? `<span class="hint">${esc(f.hint)}</span>` : '';
@@ -258,7 +300,7 @@ function openForm(key, row = null, fixed = {}) {
       const step = f.type === 'number' ? 'step="0.01"' : '';
       return `<label>${esc(f.label)} ${hint}<input type="${f.type}" name="${f.k}" value="${esc(val)}" ${step} ${req}></label>`;
     }).join('');
-    dlg.innerHTML = `<form method="dialog"><h2>${row ? 'Edit' : 'Add'} — ${esc(def.title)}</h2>
+    dlg.innerHTML = `<form method="dialog"><h2>${row ? 'Edit' : 'Add'} — ${esc(def.addTitle || def.title)}</h2>
       <div class="formgrid">${fieldsHtml}</div>
       <div class="row"><button class="primary" value="save">Save</button><button value="cancel" formnovalidate>Cancel</button></div></form>`;
     document.body.appendChild(dlg);
@@ -269,6 +311,7 @@ function openForm(key, row = null, fixed = {}) {
       e.preventDefault();
       const out = { ...fixed };
       for (const f of def.fields) {
+        if (f.k in fixed) continue;
         const el = form.elements[f.k];
         if (f.type === 'checkbox') out[f.k] = el.checked;
         else if (f.type === 'number') out[f.k] = el.value === '' ? null : Number(el.value);
@@ -276,8 +319,8 @@ function openForm(key, row = null, fixed = {}) {
         if (f.k === 'priority' && out[f.k] != null) out[f.k] = Number(out[f.k]);
       }
       try {
-        if (row) await q(sb.from(key).update(out).eq('id', row.id));
-        else await q(sb.from(key).insert(out));
+        if (row) await q(sb.from(table).update(out).eq('id', row.id));
+        else await q(sb.from(table).insert(out));
         toast('Saved'); dlg.close(); dlg.remove(); resolve(true);
       } catch { /* toast already shown; keep dialog open */ }
     });
@@ -290,20 +333,21 @@ function footerHtml(def, rows) {
   if (!def.footer || !rows.length) return '';
   const f = def.footer(rows);
   if (typeof f === 'string') return `<tfoot><tr class="total"><td colspan="${def.columns.length + 1}">${f}</td></tr></tfoot>`;
-  return `<tfoot><tr class="total">${def.columns.map((k, i) => `<td class="${/amount|balance|payment|budget/.test(k) ? 'num' : ''}">${f[k] ?? (i === 0 ? `<b>Total</b> <span class="hint">(${rows.length})</span>` : '')}</td>`).join('')}<td></td></tr></tfoot>`;
+  return `<tfoot><tr class="total">${def.columns.map((k, i) => `<td class="${VIRTUAL[k]?.num || /amount|balance|payment|budget/.test(k) ? 'num' : ''}">${f[k] ?? (i === 0 ? `<b>Total</b> <span class="hint">(${rows.length})</span>` : '')}</td>`).join('')}<td></td></tr></tfoot>`;
 }
 
-async function renderCrud(container, key, { filter = {}, title, onChange, extra } = {}) {
+async function renderCrud(container, key, { filter = {}, title, onChange, extra, subtitle } = {}) {
   const def = TABLES[key];
-  let query = sb.from(key).select('*');
+  let query = sb.from(def.table || key).select('*');
   for (const [k, v] of Object.entries(filter)) query = query.eq(k, v);
   for (const o of def.order) query = query.order(o, { ascending: !def.desc });
   const rows = await q(query);
-  container.innerHTML = `<div class="row" style="justify-content:space-between"><h2>${esc(title || def.title)}</h2>
+  const isNum = k => VIRTUAL[k]?.num || /amount|balance|payment|budget/.test(k);
+  container.innerHTML = `<div class="sec-head"><div><h2>${esc(title || def.title)}</h2>${subtitle ? `<p class="hint">${subtitle}</p>` : ''}</div>
       <button class="primary add">+ Add</button></div>
-    ${rows.length ? `<div class="tablewrap"><table><thead><tr>${def.columns.map(k => `<th class="${/amount|balance|payment|budget/.test(k) ? 'num' : ''}">${esc(def.fields.find(f => f.k === k)?.label || label(k))}</th>`).join('')}<th></th></tr></thead>
-      <tbody>${rows.map((r, i) => `<tr>${def.columns.map(k => `<td class="${/amount|balance|payment|budget/.test(k) ? 'num' : ''}">${cell(def, r, k)}</td>`).join('')}
-        <td class="row" style="flex-wrap:nowrap">${extra ? extra(r, i) : ''}<button class="small edit" data-i="${i}">Edit</button><button class="small danger del" data-i="${i}">Delete</button></td></tr>`).join('')}</tbody>
+    ${rows.length ? `<div class="tablewrap"><table class="list"><thead><tr>${def.columns.map(k => `<th class="${isNum(k) ? 'num' : ''}">${esc(def.headers?.[k] || VIRTUAL[k]?.label || def.fields.find(f => f.k === k)?.label || label(k))}</th>`).join('')}<th></th></tr></thead>
+      <tbody>${rows.map((r, i) => `<tr class="${r.is_active === false ? 'muted' : ''}">${def.columns.map(k => `<td class="${isNum(k) ? 'num' : ''}">${cell(def, r, k)}</td>`).join('')}
+        <td class="actions">${extra ? extra(r, i) : ''}<button class="small edit" data-i="${i}">Edit</button><button class="small ghost del" data-i="${i}" title="Delete" aria-label="Delete">✕</button></td></tr>`).join('')}</tbody>
       ${footerHtml(def, rows)}</table></div>`
       : `<p class="empty">Nothing here yet.</p>`}`;
   const changed = async () => { await loadLookups(); onChange ? await onChange() : await renderCrud(container, key, { filter, title, onChange, extra }); };
@@ -311,7 +355,7 @@ async function renderCrud(container, key, { filter = {}, title, onChange, extra 
   container.querySelectorAll('.edit').forEach(b => b.onclick = async () => { if (await openForm(key, rows[b.dataset.i], filter)) await changed(); });
   container.querySelectorAll('.del').forEach(b => b.onclick = async () => {
     if (!confirm('Delete this entry? This cannot be undone.')) return;
-    await q(sb.from(key).delete().eq('id', rows[b.dataset.i].id)); toast('Deleted'); await changed();
+    await q(sb.from(def.table || key).delete().eq('id', rows[b.dataset.i].id)); toast('Deleted'); await changed();
   });
   return rows;
 }
@@ -325,130 +369,172 @@ async function markPaid(itemId, due, after) {
 }
 
 // ---------- DASHBOARD ----------
+let spendPeriod = 'this';
 async function dashboard() {
-  view.innerHTML = '<p>Loading…</p>';
-  const monthStart = today().slice(0, 8) + '01';
+  view.innerHTML = '<p class="loading">Loading…</p>';
   const rank = { urgent: 0, warning: 1, info: 2 };
-  const alerts = (await q(sb.from('alerts').select('*').eq('dismissed', false).order('due_date')))
-    .sort((a, b) => rank[a.severity] - rank[b.severity]);
-  const [bal, cash, debt, shared, commit, upcoming, followups, catSpend] = await Promise.all([
+  const monthStart = today().slice(0, 8) + '01';
+  const [alertsRaw, bal, cash, debt, shared, upcoming, followups, catSpend, uncat, lastTxn, debtRows] = await Promise.all([
+    q(sb.from('alerts').select('*').eq('dismissed', false).order('due_date')),
     q(sb.from('v_account_balances').select('*').eq('is_active', true)),
-    q(sb.from('v_monthly_cashflow').select('*').order('month', { ascending: false }).limit(6)),
+    q(sb.from('v_monthly_cashflow').select('*').order('month', { ascending: false }).limit(12)),
     q(sb.from('v_debt_summary').select('*').maybeSingle()),
     q(sb.from('v_shared_balance').select('*').maybeSingle()),
-    q(sb.from('v_monthly_commitments').select('*').maybeSingle()),
-    q(sb.rpc('upcoming_items', { p_days: 21 })),
+    q(sb.rpc('upcoming_items', { p_days: 14 })),
     q(sb.from('debt_contacts').select('follow_up_date, summary, debt_id').eq('follow_up_done', false).not('follow_up_date', 'is', null).lte('follow_up_date', new Date(Date.now() + 7 * 864e5).toLocaleDateString('en-CA')).order('follow_up_date')),
-    q(sb.from('v_category_spend_month').select('*').eq('month', monthStart).order('spent', { ascending: false })),
+    q(sb.from('v_category_spend_month').select('*').order('month', { ascending: false }).limit(400)),
+    sb.from('transactions').select('id', { count: 'exact', head: true }).is('category_id', null),
+    q(sb.from('transactions').select('txn_date').order('txn_date', { ascending: false }).limit(1)),
+    q(sb.from('debts').select('current_balance').eq('status', 'active')),
   ]);
-  const { count: uncatCount } = await sb.from('transactions').select('id', { count: 'exact', head: true }).is('category_id', null);
+  const alerts = alertsRaw.sort((a, b) => rank[a.severity] - rank[b.severity]);
+  const uncatCount = uncat.count || 0;
+  const name = cache.settings?.display_name;
   const isLoan = a => ['loan', 'mortgage', 'credit_card'].includes(a.account_type);
-  const accBal = a => Number(a.calculated_balance ?? 0);
   const cashAccts = bal.filter(a => !isLoan(a));
-  const totalCash = cashAccts.reduce((s, a) => s + accBal(a) * (a.is_joint ? Number(a.my_share_pct ?? 100) / 100 : 1), 0);
-  const jointAccts = cashAccts.filter(a => a.is_joint);
-  const jointTotal = jointAccts.reduce((s, a) => s + accBal(a), 0);
-  const loans = bal.filter(isLoan);
-  const totalLoans = loans.reduce((s, a) => s + accBal(a), 0);
+  const myCash = sum(cashAccts, a => Number(a.calculated_balance) * (a.is_joint ? Number(a.my_share_pct ?? 100) / 100 : 1));
   const thisMonth = cash.find(c => c.month === monthStart) || {};
-  const s = Number(shared?.balance || 0);
-  const partner = cache.settings?.partner_label || 'Ex-partner';
-  const gap = Number(commit?.monthly_in || 0) - Number(commit?.monthly_out || 0) - Number(debt?.my_monthly_minimums || 0);
+  const dueOut = upcoming.filter(u => u.direction === 'out');
+  const dueTotal = sum(dueOut, u => u.my_amount);
+  const overdue = dueOut.filter(u => u.overdue);
+  const hour = new Date().getHours();
+  const greet = hour < 12 ? 'Good morning' : hour < 18 ? 'Good afternoon' : 'Good evening';
+  const s = Number(shared?.balance || 0), partner = cache.settings?.partner_label || 'Ex-partner';
 
   view.innerHTML = `
-    ${alerts.length ? `<div class="card" id="alerts"><h2>Alerts</h2><table><tbody>${alerts.map((a, i) => `<tr>
-        <td><span class="pill ${a.severity === 'urgent' ? 'bad' : a.severity === 'warning' ? 'warn' : ''}">${esc(label(a.severity))}</span></td>
-        <td><b>${esc(a.title)}</b><br><span class="hint">${esc(a.body)}</span></td>
-        <td><button class="small dismiss" data-i="${i}">Dismiss</button></td></tr>`).join('')}</tbody></table>
-        <p class="hint">Checked automatically every morning at 6am.</p></div>` : ''}
-    ${!cache.accounts.length ? `<div class="card"><h2>Welcome</h2><p>Start in <b>Setup</b>: add your bank accounts. Or go straight to <b>Import</b> and choose your CommBank CSV and Westpac PDF/CSV files — accounts are set up for you.</p></div>` : ''}
-    <div class="grid">
-      <div class="stat"><div class="label">Money in accounts</div><div class="value">${money(totalCash)}</div><div class="sub">${cashAccts.length} everyday/savings account(s)${jointAccts.length ? `<br>Includes your share of joint accounts (joint total ${money(jointTotal)})` : ''}</div></div>
-      ${loans.length ? `<div class="stat warn"><div class="label">Loan balances</div><div class="value">${money(Math.abs(totalLoans))}</div><div class="sub">${loans.map(a => esc(a.name)).join(' · ')}</div></div>` : ''}
-      <div class="stat ${Number(thisMonth.net) < 0 ? 'bad' : 'good'}"><div class="label">This month so far</div><div class="value">${money(thisMonth.net || 0)}</div><div class="sub">In ${money(thisMonth.money_in || 0)} · Out ${money(thisMonth.money_out || 0)}</div></div>
-      <div class="stat ${gap < 0 ? 'bad' : 'good'}"><div class="label">Regular monthly gap</div><div class="value">${money(gap)}</div><div class="sub">Regular income − bills − debt minimums</div></div>
-      <div class="stat warn"><div class="label">My total debt</div><div class="value">${money(debt?.my_total_owed || 0)}</div><div class="sub">Arrears ${money(debt?.my_total_arrears || 0)} · ${debt?.active_debts || 0} debts · ${debt?.on_hardship || 0} on hardship</div></div>
-      <div class="stat"><div class="label">Shared costs</div><div class="value">${money(Math.abs(s))}</div><div class="sub">${s > 0 ? `${esc(partner)} owes you` : s < 0 ? `You owe ${esc(partner)}` : 'All square'}</div></div>
+    <div class="page-head"><div><h1 class="page-title">${greet}${name ? ', ' + esc(name) : ''}</h1>
+      <p class="hint">${lastTxn[0] ? `Bank data up to ${esc(fmtDate(lastTxn[0].txn_date))} · <button class="link" data-go="import">import newer statements</button>` : 'No statements imported yet — <button class="link" data-go="import">import your first</button>'}</p></div></div>
+
+    ${alerts.length ? `<div class="alerts">${alerts.slice(0, 4).map((a, i) => `<div class="alert ${a.severity}">
+        <span class="alert-icon" aria-hidden="true">${a.severity === 'urgent' ? '!' : a.severity === 'warning' ? '•' : 'i'}</span>
+        <div><b>${esc(a.title)}</b><div class="hint">${esc(a.body)}</div></div>
+        <button class="small ghost dismiss" data-i="${i}" title="Dismiss" aria-label="Dismiss">✕</button></div>`).join('')}
+      ${alerts.length > 4 ? `<p class="hint">+ ${alerts.length - 4} more alert(s)</p>` : ''}</div>` : ''}
+
+    <div class="tiles">
+      <div class="tile"><div class="tile-label">Money in your accounts</div><div class="tile-value">${moneyRound(myCash)}</div>
+        <div class="tile-sub">your share, ${cashAccts.length} account${cashAccts.length === 1 ? '' : 's'}</div></div>
+      <div class="tile ${Number(thisMonth.net) < 0 ? 'bad' : 'good'}"><div class="tile-label">This month so far</div><div class="tile-value">${Number(thisMonth.net) >= 0 ? '+' : ''}${moneyRound(thisMonth.net || 0)}</div>
+        <div class="tile-sub">in ${moneyRound(thisMonth.money_in || 0)} · out ${moneyRound(thisMonth.money_out || 0)}</div></div>
+      <div class="tile ${overdue.length ? 'bad' : dueOut.length ? 'warn' : ''}"><div class="tile-label">Bills due in 14 days</div><div class="tile-value">${moneyRound(dueTotal)}</div>
+        <div class="tile-sub">${dueOut.length} bill${dueOut.length === 1 ? '' : 's'}, your share${overdue.length ? ` · <b>${overdue.length} overdue</b>` : ''}</div></div>
+      <div class="tile"><div class="tile-label">Total debt</div><div class="tile-value">${moneyCompact(sum(debtRows, x => x.current_balance))}</div>
+        <div class="tile-sub">your share ${moneyRound(debt?.my_total_owed || 0)}${Number(debt?.my_total_arrears) ? ` · overdue ${moneyRound(debt.my_total_arrears)}` : ''}</div></div>
     </div>
-    ${uncatCount ? `<div class="card"><b>${uncatCount}</b> transaction(s) have no category. <button class="link" id="go-uncat">Sort them now</button></div>` : ''}
-    ${debt?.hardship_to_request ? `<div class="card"><span class="pill warn">To do</span> ${debt.hardship_to_request} debt(s) marked "to request" hardship. A free financial counsellor (National Debt Helpline 1800 007 007) can make these calls with you.</div>` : ''}
-    <div class="grid" style="grid-template-columns:repeat(auto-fit,minmax(320px,1fr))">
-      <div class="card"><h2>Next 3 weeks</h2>
-        ${upcoming.length ? `<table><tbody>${upcoming.map(u => `<tr class="${u.overdue ? 'overdue' : ''}"><td>${esc(fmtDate(u.due_date))}<br><span class="hint">${u.overdue ? (u.direction === 'in' ? 'not received yet' : 'OVERDUE') : daysFromToday(u.due_date) === 0 ? 'today' : 'in ' + daysFromToday(u.due_date) + ' days'}</span></td>
-          <td>${esc(u.name)}${u.is_shared ? ' <span class="pill">shared</span>' : ''}${u.debt_id ? ' <span class="pill warn">repayment</span>' : ''}
-            ${u.direction === 'out' && daysFromToday(u.due_date) <= 7 ? `<br><button class="small mark-paid" data-id="${u.item_id}" data-due="${u.due_date}">Mark paid</button>` : ''}</td>
-          <td class="num ${u.direction === 'in' ? 'in' : ''}">${u.direction === 'in' ? '+' : '−'}${money(u.my_amount)}</td></tr>`).join('')}</tbody>
-          <tfoot><tr class="total"><td><b>Total</b></td><td>In ${money(sum(upcoming.filter(u => u.direction === 'in'), u => u.my_amount))} · Out ${money(sum(upcoming.filter(u => u.direction === 'out'), u => u.my_amount))}</td>
-          <td class="num"><b>${money(sum(upcoming, u => (u.direction === 'in' ? 1 : -1) * u.my_amount))}</b></td></tr></tfoot></table>`
-          : '<p class="empty">No bills or income set up yet — add them under Bills &amp; income.</p>'}
-      </div>
-      <div class="card"><h2>Spending this month</h2>
-        ${catSpend.length ? `<table><tbody>${catSpend.map(c => {
-          const over = c.monthly_budget && Number(c.spent) > Number(c.monthly_budget);
-          return `<tr><td>${esc(c.category)}${c.is_essential ? ' <span class="pill">essential</span>' : ''}</td><td class="num">${money(c.spent)}</td>
-            <td class="num hint">${c.monthly_budget ? `${over ? '<span class="pill bad">over</span> ' : ''}of ${money(c.monthly_budget)}` : ''}</td></tr>`; }).join('')}</tbody>
-          <tfoot><tr class="total"><td><b>Total</b></td><td class="num"><b>${money(sum(catSpend, c => c.spent))}</b></td><td></td></tr></tfoot></table>`
-          : '<p class="empty">No spending imported for this month yet.</p>'}
-      </div>
-      <div class="card"><h2>Creditor follow-ups due</h2>
-        ${followups.length ? `<table><tbody>${followups.map(f => `<tr class="${f.follow_up_date < today() ? 'overdue' : ''}"><td>${esc(fmtDate(f.follow_up_date))}</td><td><b>${esc(refName('debts', f.debt_id))}</b><br>${esc(f.summary)}</td></tr>`).join('')}</tbody></table>`
-          : '<p class="empty">Nothing due this week.</p>'}
-      </div>
-      <div class="card"><h2>Last 6 months</h2>
-        ${cash.length ? `<table><thead><tr><th>Month</th><th class="num">In</th><th class="num">Out</th><th class="num">Net</th></tr></thead><tbody>${cash.map(c => `<tr><td>${new Date(c.month + 'T00:00:00').toLocaleDateString('en-AU', { month: 'short', year: 'numeric' })}</td><td class="num in">${money(c.money_in || 0)}</td><td class="num">${money(c.money_out || 0)}</td><td class="num ${Number(c.net) < 0 ? 'out' : 'in'}"><b>${money(c.net || 0)}</b></td></tr>`).join('')}</tbody></table>`
-          : '<p class="empty">Import a statement to see this.</p>'}
-      </div>
-    </div>`;
-  $('#go-uncat')?.addEventListener('click', () => show('sort'));
+
+    ${uncatCount || debt?.hardship_to_request || followups.length || s ? `<div class="chips">
+      ${uncatCount ? `<button class="chip" data-go="sort"><b>${uncatCount}</b> transactions to sort →</button>` : ''}
+      ${debt?.hardship_to_request ? `<button class="chip warn" data-go="debts"><b>${debt.hardship_to_request}</b> hardship request${debt.hardship_to_request > 1 ? 's' : ''} to make →</button>` : ''}
+      ${followups.length ? `<button class="chip warn" data-go="debts"><b>${followups.length}</b> creditor follow-up${followups.length > 1 ? 's' : ''} due →</button>` : ''}
+      ${s ? `<button class="chip" data-go="shared">${s > 0 ? `${esc(partner)} owes you <b>${moneyRound(s)}</b>` : `You owe ${esc(partner)} <b>${moneyRound(-s)}</b>`} →</button>` : ''}
+    </div>` : ''}
+
+    <div class="grid2">
+      <section class="card"><div class="sec-head"><div><h2>Coming up</h2><p class="hint">Next 14 days · your share</p></div><button class="small" data-go="bills">All bills</button></div>
+        ${upcoming.length ? `<ul class="due-list">${upcoming.map(u => {
+          const d = daysFromToday(u.due_date);
+          const when = u.overdue ? (u.direction === 'in' ? 'late' : 'overdue') : d === 0 ? 'today' : d === 1 ? 'tomorrow' : `in ${d} days`;
+          return `<li class="${u.overdue ? 'is-late' : ''}"><div class="due-date"><b>${new Date(u.due_date + 'T00:00:00').getDate()}</b><span>${new Date(u.due_date + 'T00:00:00').toLocaleDateString('en-AU', { month: 'short' })}</span></div>
+            <div class="due-main"><b>${esc(u.name)}</b><div class="hint">${when}${u.debt_id ? ' · loan repayment' : ''}${u.is_shared ? ' · shared' : ''}</div></div>
+            <div class="due-amt ${u.direction === 'in' ? 'in' : ''}">${u.direction === 'in' ? '+' : '−'}${money(u.my_amount)}</div>
+            ${u.direction === 'out' && d <= 7 ? `<button class="small mark-paid" data-id="${u.item_id}" data-due="${u.due_date}">Paid</button>` : '<span></span>'}</li>`; }).join('')}</ul>`
+          : '<p class="empty">Nothing due in the next 14 days.</p>'}
+      </section>
+      <section class="card"><div class="sec-head"><div><h2>Where the money went</h2><p class="hint">Household spending by category</p></div>
+          <div class="seg" role="tablist">${[['this', 'This month'], ['last', 'Last month'], ['avg3', '3-month avg']].map(([k, l]) => `<button class="${spendPeriod === k ? 'on' : ''}" data-period="${k}">${l}</button>`).join('')}</div></div>
+        <div id="spend-chart"></div></section>
+    </div>
+
+    <section class="card"><div class="sec-head"><div><h2>Money in vs money out</h2><p class="hint">Household, by month · transfers and loan interest not counted</p></div></div>
+      <div id="flow-chart"></div></section>`;
+
+  // charts
+  const months = cash.slice().reverse();
+  if (months.length) columnChart($('#flow-chart'), {
+    title: 'Money in vs money out by month',
+    labels: months.map(c => new Date(c.month + 'T00:00:00').toLocaleDateString('en-AU', { month: 'short' })),
+    tipLabels: months.map(c => new Date(c.month + 'T00:00:00').toLocaleDateString('en-AU', { month: 'long', year: 'numeric' })),
+    series: [{ name: 'Money in', color: SERIES.blue, values: months.map(c => Number(c.money_in || 0)) },
+             { name: 'Money out', color: SERIES.orange, values: months.map(c => Number(c.money_out || 0)) }],
+    tipExtra: i => `<div class="hint">Net ${money(Number(months[i].net || 0))}</div>`,
+  }); else $('#flow-chart').innerHTML = '<p class="empty">Import a statement to see this.</p>';
+  const drawSpend = () => {
+    const ms = [...new Set(catSpend.map(c => c.month))].sort().reverse();
+    const lastM = new Date(new Date(monthStart + 'T00:00:00').setMonth(new Date(monthStart + 'T00:00:00').getMonth() - 1)).toLocaleDateString('en-CA').slice(0, 8) + '01';
+    const pick = spendPeriod === 'this' ? [monthStart] : spendPeriod === 'last' ? [lastM] : ms.filter(m => m < monthStart).slice(0, 3);
+    const div = spendPeriod === 'avg3' ? Math.max(1, pick.length) : 1;
+    const totals = new Map();
+    for (const c of catSpend.filter(c => pick.includes(c.month))) totals.set(c.category, (totals.get(c.category) || 0) + Number(c.spent) / div);
+    let items = [...totals.entries()].map(([label, value]) => ({ label, value })).filter(i => i.value > 0.5).sort((a, b) => b.value - a.value);
+    if (items.length > 8) { const rest = items.slice(7); items = items.slice(0, 7).concat([{ label: `Other (${rest.length})`, value: sum(rest, r => r.value) }]); }
+    const budgets = new Map(cache.categories.filter(c => c.monthly_budget).map(c => [c.name, Number(c.monthly_budget)]));
+    items.forEach(i => { const b = budgets.get(i.label); if (b) { i.note = `budget ${money(b)}`; if (i.value > b) { i.badge = 'over'; i.badgeClass = 'bad'; } } });
+    hbarChart($('#spend-chart'), { items, color: SERIES.orange, empty: 'No spending recorded for this period yet.' });
+    const tot = sum(items, i => i.value);
+    if (items.length) $('#spend-chart').insertAdjacentHTML('beforeend', `<p class="hint total-line">Total ${money(tot)}${spendPeriod === 'avg3' ? ' per month' : ''}</p>`);
+  };
+  drawSpend();
+
+  // interactions
+  view.querySelectorAll('[data-period]').forEach(b => b.onclick = () => { spendPeriod = b.dataset.period; view.querySelectorAll('[data-period]').forEach(x => x.classList.toggle('on', x === b)); drawSpend(); });
+  view.querySelectorAll('[data-go]').forEach(b => b.onclick = () => show(b.dataset.go));
   view.querySelectorAll('.mark-paid').forEach(b => b.onclick = () => markPaid(b.dataset.id, b.dataset.due, dashboard));
   view.querySelectorAll('.dismiss').forEach(b => b.onclick = async () => {
     await q(sb.from('alerts').update({ dismissed: true }).eq('id', alerts[b.dataset.i].id));
-    b.closest('tr').remove(); if (!view.querySelector('.dismiss')) $('#alerts')?.remove();
+    b.closest('.alert').remove();
   });
 }
 
 // ---------- BUDGET (Overall / me / partner) ----------
 let budgetWho = 'overall';
 async function budget() {
-  view.innerHTML = '<p>Loading…</p>';
+  view.innerHTML = '<p class="loading">Loading…</p>';
   const months = 6;
   const r = await q(sb.rpc('budget_summary', { p_months: months }));
   const me = cache.settings?.display_name || 'Me';
-  const names = { overall: 'Overall household', me, partner: r.partner };
+  const names = { overall: 'Household', me, partner: r.partner };
   const draw = () => {
     const p = r.people[budgetWho];
-    const gap = p.regular_in - p.regular_out - p.debt_monthly;
+    const costs = p.regular_out + p.debt_monthly;
+    const gap = p.regular_in - costs;
     const actualGap = p.actual_in - p.actual_out;
-    const row = (cells, cls = '') => `<tr class="${cls}">${cells.map((c, i) => `<td class="${i ? 'num' : ''}">${c}</td>`).join('')}</tr>`;
-    const freq = f => ({ weekly: 'week', fortnightly: 'fortnight', monthly: 'month', quarterly: 'quarter', yearly: 'year' }[f] || f);
-    const spend = p.categories.filter(c => c.amount < 0);
-    const income = p.categories.filter(c => c.amount > 0).sort((a, b) => b.amount - a.amount);
+    const freq = f => FREQ_WORD[f] || f;
+    const list = (rows, cols) => rows.length ? `<div class="tablewrap"><table class="list"><tbody>${rows.map(r => `<tr>${cols.map((c, i) => `<td class="${i ? 'num' : ''}">${c(r)}</td>`).join('')}</tr>`).join('')}</tbody></table></div>` : '<p class="empty">None.</p>';
     view.innerHTML = `
-      <div class="row" role="tablist" style="margin-bottom:1rem">
-        ${Object.entries(names).map(([k, v]) => `<button role="tab" class="${k === budgetWho ? 'primary' : ''}" data-who="${k}" aria-selected="${k === budgetWho}">${esc(v)}</button>`).join('')}
+      <div class="page-head"><div><h1 class="page-title">Budget</h1><p class="hint">Regular income and costs per month, split by who pays</p></div>
+        <div class="seg big" role="tablist">${Object.entries(names).map(([k, v]) => `<button class="${k === budgetWho ? 'on' : ''}" data-who="${k}" role="tab" aria-selected="${k === budgetWho}">${esc(v)}</button>`).join('')}</div></div>
+
+      <div class="tiles">
+        <div class="tile"><div class="tile-label">Regular income</div><div class="tile-value">${moneyRound(p.regular_in)}</div><div class="tile-sub">per month</div></div>
+        <div class="tile"><div class="tile-label">Regular costs</div><div class="tile-value">${moneyRound(costs)}</div><div class="tile-sub">bills ${moneyRound(p.regular_out)} · debts ${moneyRound(p.debt_monthly)}</div></div>
+        <div class="tile ${gap < 0 ? 'bad' : 'good'}"><div class="tile-label">Left over each month</div><div class="tile-value">${gap >= 0 ? '+' : ''}${moneyRound(gap)}</div><div class="tile-sub">${gap < 0 ? 'short before everyday spending' : 'before everyday spending'}</div></div>
+        <div class="tile ${actualGap < 0 ? 'bad' : 'good'}"><div class="tile-label">What actually happened</div><div class="tile-value">${actualGap >= 0 ? '+' : ''}${moneyRound(actualGap)}</div><div class="tile-sub">average per month, last ${months} months</div></div>
       </div>
-      <div class="grid">
-        <div class="stat ${gap < 0 ? 'bad' : 'good'}"><div class="label">Regular monthly left over</div><div class="value">${money(gap)}</div>
-          <div class="sub">Income ${money(p.regular_in)} − bills ${money(p.regular_out)} − debt costs ${money(p.debt_monthly)}</div></div>
-        <div class="stat ${actualGap < 0 ? 'bad' : 'good'}"><div class="label">Actual average, last ${months} months</div><div class="value">${money(actualGap)}</div>
-          <div class="sub">In ${money(p.actual_in)} · Out ${money(p.actual_out)} per month (to ${esc(fmtDate(r.data_to))})</div></div>
-        <div class="stat warn"><div class="label">Debt</div><div class="value">${money(p.debt_balance)}</div><div class="sub">Overdue ${money(p.arrears)}</div></div>
+
+      <div class="grid2">
+        <section class="card"><div class="sec-head"><div><h2>Each month</h2><p class="hint">Regular income against regular costs</p></div></div>
+          <div id="b-compare"></div>
+          <p class="callout ${gap < 0 ? 'bad' : 'good'}">${gap < 0 ? `Regular costs are <b>${moneyRound(-gap)}</b> more than regular income each month.` : `<b>${moneyRound(gap)}</b> left each month for food, fuel and everything else.`}</p></section>
+        <section class="card"><div class="sec-head"><div><h2>Everyday spending</h2><p class="hint">Average per month, last ${months} months</p></div></div>
+          <div id="b-spend"></div></section>
       </div>
-      ${budgetWho !== 'overall' ? `<p class="hint">Shares used: each bill, income and debt's "My share %" (${esc(me)} gets that %, ${esc(r.partner)} the rest). Everyday spending not linked to a bill uses your shared-costs % from Setup. Money moved between you two isn't counted.</p>` : ''}
-      <div class="grid" style="grid-template-columns:repeat(auto-fit,minmax(min(100%,460px),1fr))">
-        <div class="card"><h2>Regular income</h2>${p.income_items.length ? `<div class="tablewrap"><table><thead><tr><th>Item</th><th class="num">Amount</th><th class="num">Share</th><th class="num">Per month</th></tr></thead><tbody>
-          ${p.income_items.map(i => row([esc(i.name), `${money(i.amount)}/${freq(i.frequency)}`, i.share + '%', money(i.monthly)])).join('')}
-          ${row(['<b>Total</b>', '', '', `<b>${money(p.regular_in)}</b>`])}</tbody></table></div>` : '<p class="empty">None.</p>'}</div>
-        <div class="card"><h2>Regular bills</h2>${p.bill_items.length ? `<div class="tablewrap"><table><thead><tr><th>Bill</th><th class="num">Amount</th><th class="num">Share</th><th class="num">Per month</th></tr></thead><tbody>
-          ${p.bill_items.map(i => row([esc(i.name) + (i.is_debt_repayment ? ' <span class="pill warn">repayment</span>' : ''), `${money(i.amount)}/${freq(i.frequency)}`, i.share + '%', i.is_debt_repayment ? `<span class="hint">in Debts</span>` : money(i.monthly)])).join('')}
-          ${row(['<b>Total</b> <span class="hint">(repayments counted under Debts)</span>', '', '', `<b>${money(p.regular_out)}</b>`])}</tbody></table></div>` : '<p class="empty">None.</p>'}</div>
-        <div class="card"><h2>Debts</h2>${p.debt_items.length ? `<div class="tablewrap"><table><thead><tr><th>Debt</th><th class="num">Share</th><th class="num">Balance</th><th class="num">Per month</th></tr></thead><tbody>
-          ${p.debt_items.map(d => row([`${esc(d.creditor)}${d.hardship === 'approved' ? ' <span class="pill good">hardship</span>' : ''}`, d.share + '%', d.balance ? money(d.balance) : '<span class="hint">not entered</span>', money(d.monthly)])).join('')}
-          ${row(['<b>Total</b>', '', `<b>${money(p.debt_balance)}</b>`, `<b>${money(p.debt_monthly)}</b>`])}</tbody></table></div>` : '<p class="empty">None.</p>'}</div>
-        <div class="card"><h2>Actual spending — average per month</h2>${spend.length ? `<div class="tablewrap"><table><tbody>
-          ${spend.map(c => row([esc(c.name), money(-c.amount)])).join('')}${row(['<b>Total</b>', `<b>${money(p.actual_out)}</b>`])}</tbody></table></div>` : '<p class="empty">No spending imported.</p>'}
-          ${income.length ? `<h3>Actual income — average per month</h3><table><tbody>${income.map(c => row([esc(c.name), money(c.amount)])).join('')}${row(['<b>Total</b>', `<b>${money(p.actual_in)}</b>`])}</tbody></table></div>` : ''}</div>
-      </div>`;
+
+      <details class="card fold"><summary><h2>Income</h2><span class="hint">${p.income_items.length} items · ${moneyRound(p.regular_in)} / month</span></summary>
+        ${list(p.income_items, [i => `<b>${esc(i.name)}</b><div class="hint">${money(i.amount)} / ${freq(i.frequency)}${i.share < 100 ? ` · ${i.share}% counted` : ''}</div>`, i => money(i.monthly)])}</details>
+      <details class="card fold"><summary><h2>Bills</h2><span class="hint">${p.bill_items.length} items · ${moneyRound(p.regular_out)} / month</span></summary>
+        ${list(p.bill_items, [i => `<b>${esc(i.name)}</b><div class="hint">${money(i.amount)} / ${freq(i.frequency)}${i.share < 100 ? ` · ${i.share}% counted` : ''}${i.is_debt_repayment ? ' · counted under Debts' : ''}</div>`, i => i.is_debt_repayment ? '<span class="hint">in Debts</span>' : money(i.monthly)])}</details>
+      <details class="card fold"><summary><h2>Debts</h2><span class="hint">${moneyRound(p.debt_balance)} owed · ${moneyRound(p.debt_monthly)} / month</span></summary>
+        ${list(p.debt_items, [d => `<b>${esc(d.creditor)}</b><div class="hint">${d.balance ? money(d.balance) + ' owed' : 'balance not entered'}${d.share < 100 ? ` · ${d.share}% counted` : ''}${d.hardship === 'approved' ? ' · on hardship' : ''}</div>`, d => money(d.monthly)])}</details>
+      ${budgetWho !== 'overall' ? `<p class="hint">Splits use each item's "My share %" — ${esc(me)} gets that share, ${esc(r.partner)} the rest. Everyday spending uses the shared-costs % from Setup. Money moved between you two isn't counted.</p>` : ''}`;
+    hbarChart($('#b-compare'), { items: [
+      { label: 'Income', value: p.regular_in, color: SERIES.blue },
+      { label: 'Bills', value: p.regular_out, color: SERIES.orange },
+      { label: 'Debt repayments', value: p.debt_monthly, color: SERIES.orange },
+    ], max: Math.max(p.regular_in, p.regular_out + p.debt_monthly, p.regular_out, p.debt_monthly, 1) });
+    let spend = p.categories.filter(c => c.amount < 0).map(c => ({ label: c.name, value: -c.amount })).sort((a, b) => b.value - a.value);
+    if (spend.length > 8) { const rest = spend.slice(7); spend = spend.slice(0, 7).concat([{ label: `Other (${rest.length})`, value: sum(rest, x => x.value) }]); }
+    hbarChart($('#b-spend'), { items: spend, color: SERIES.orange, empty: 'No spending imported.' });
+    if (spend.length) $('#b-spend').insertAdjacentHTML('beforeend', `<p class="hint total-line">Total ${money(p.actual_out)} per month · income ${money(p.actual_in)}</p>`);
     view.querySelectorAll('[data-who]').forEach(b => b.onclick = () => { budgetWho = b.dataset.who; draw(); });
   };
   draw();
@@ -466,7 +552,7 @@ async function transactions(opts = {}) {
   const mLabel = m => new Date(m + '-01T00:00:00').toLocaleDateString('en-AU', { month: 'short', year: 'numeric' });
   const monthSummary = () => !state.months.size ? 'All months' : state.months.size === 1 ? mLabel([...state.months][0])
     : `${state.months.size} months selected`;
-  view.innerHTML = `<div class="card"><div class="formgrid">
+  view.innerHTML = `<div class="page-head"><div><h1 class="page-title">Transactions</h1><p class="hint">Every transaction from every account. Filter, set categories, and see totals for exactly what you filtered.</p></div></div><div class="card"><div class="formgrid">
       <div><span style="font-weight:700;font-size:.95rem">Months</span>
         <details class="monthpick" id="f-month"><summary id="f-month-sum">${esc(monthSummary())}</summary>
           <div class="monthlist">
@@ -609,9 +695,8 @@ async function sortView() {
   groups.sort((a, b) => Math.abs(b.total) - Math.abs(a.total));
   const draw = () => {
     const shown = groups.filter(g => sortDir === 'all' || g.dir === sortDir);
-    view.innerHTML = `<div class="card"><h2>To sort</h2>
-      <p>${all.length} transaction(s) without a category, grouped by who they're from or to — biggest first.
-      For each group pick a category, then either <b>One-off</b> (just these, no rule) or <b>Make rule</b> (these and all future ones).</p>
+    view.innerHTML = `<div class="page-head"><div><h1 class="page-title">To sort</h1><p class="hint">Transactions without a category, grouped by who they’re from or to, biggest first.</p></div></div><div class="card">
+      <p><b>${all.length}</b> transaction(s) to sort. For each group pick a category, then <b>One-off</b> (just these, no rule) or <b>Make rule</b> (these and all future ones).</p>
       <div class="row"><span>Show:</span>${['all', 'out', 'in'].map(d => `<button class="small ${sortDir === d ? 'primary' : ''}" data-dir="${d}">${{ all: 'Everything', out: 'Money out', in: 'Money in' }[d]}</button>`).join('')}</div></div>
       ${shown.length ? shown.slice(0, 150).map(g => `<div class="card sortgroup" data-k="${esc(g.key)}">
         <div class="row" style="justify-content:space-between;align-items:flex-start">
@@ -715,7 +800,7 @@ function openingFor(parsed) {
 }
 
 async function importView() {
-  view.innerHTML = `<div class="card"><h2>Import bank statements</h2>
+  view.innerHTML = `<div class="page-head"><div><h1 class="page-title">Import</h1><p class="hint">Add bank statements: CommBank or Westpac CSV, or the Westpac Account activity PDF.</p></div></div><div class="card"><h2>Choose files</h2>
     <p class="hint">Choose one or more files at once: <b>CSV</b> exports from CommBank or Westpac, or the <b>Account activity PDF</b> from the Westpac app.
     Each file is matched to an account (or a new account is set up for you). Importing the same dates twice is safe — duplicates are skipped.</p>
     <label>Statement files <input type="file" id="i-file" accept=".csv,text/csv,.pdf,application/pdf" multiple></label>
@@ -837,57 +922,90 @@ async function importView() {
   await loadHistory();
 }
 
-// ---------- BILLS ----------
-async function bills() {
-  view.innerHTML = `<div class="card" id="b-up"></div><div class="card" id="b-list"></div>`;
-  const drawUpcoming = async () => {
-    const up = await q(sb.rpc('upcoming_items', { p_days: 35 }));
-    const outs = up.filter(u => u.direction === 'out').reduce((s, u) => s + Number(u.my_amount), 0);
-    const ins = up.filter(u => u.direction === 'in').reduce((s, u) => s + Number(u.my_amount), 0);
-    $('#b-up').innerHTML = `<h2>Next 5 weeks</h2><p>Coming in ${money(ins)} · Going out ${money(outs)} (your share) · Difference <b>${money(ins - outs)}</b></p>
-      ${up.length ? `<div class="tablewrap"><table><tbody>${up.map(u => `<tr class="${u.overdue ? 'overdue' : ''}"><td>${esc(fmtDate(u.due_date))}${u.overdue ? ' <span class="pill bad">overdue</span>' : ''}</td><td>${esc(u.name)}</td><td class="num ${u.direction === 'in' ? 'in' : ''}">${u.direction === 'in' ? '+' : '−'}${money(u.my_amount)}</td></tr>`).join('')}</tbody></table></div>` : '<p class="empty">Add your bills and income below.</p>'}`;
+// ---------- BILLS & INCOME ----------
+async function recurringPage(kind) {
+  const isBills = kind === 'bills';
+  const dir = isBills ? 'out' : 'in';
+  view.innerHTML = `<div class="page-head"><div><h1 class="page-title">${isBills ? 'Bills' : 'Income'}</h1>
+      <p class="hint">${isBills ? 'Regular payments, including loan repayments. Matched automatically when you import statements.' : 'Regular money coming in. Matched automatically when you import statements.'}</p></div></div>
+    <div class="tiles" id="r-tiles"></div>
+    <section class="card"><div class="sec-head"><div><h2>${isBills ? 'Due' : 'Expected'} in the next 5 weeks</h2><p class="hint">your share</p></div></div><div id="r-up"></div></section>
+    <section class="card" id="r-list"></section>`;
+  const drawTop = async () => {
+    const [items, up] = await Promise.all([
+      q(sb.from('recurring_items').select('*').eq('direction', dir).eq('is_active', true)),
+      q(sb.rpc('upcoming_items', { p_days: 35 })),
+    ]);
+    const counted = items.filter(i => !(isBills && i.debt_id));
+    const pm = sum(counted, i => i.amount * PER_MONTH[i.frequency]);
+    const pmMe = sum(counted, i => i.amount * PER_MONTH[i.frequency] * i.my_share_pct / 100);
+    const repay = sum(items.filter(i => i.debt_id), i => i.amount * PER_MONTH[i.frequency] * i.my_share_pct / 100);
+    const mine = up.filter(u => u.direction === dir);
+    const late = mine.filter(u => u.overdue);
+    $('#r-tiles').innerHTML = `
+      <div class="tile"><div class="tile-label">${isBills ? 'Bills' : 'Income'} per month</div><div class="tile-value">${moneyRound(pm)}</div><div class="tile-sub">household${isBills ? ', not counting loan repayments' : ''}</div></div>
+      <div class="tile"><div class="tile-label">Your share</div><div class="tile-value">${moneyRound(pmMe)}</div><div class="tile-sub">per month${isBills && repay ? ` · plus ${moneyRound(repay)} loan repayments` : ''}</div></div>
+      <div class="tile ${late.length ? 'bad' : ''}"><div class="tile-label">${isBills ? 'Overdue' : 'Late'}</div><div class="tile-value">${late.length}</div><div class="tile-sub">${late.length ? moneyRound(sum(late, u => u.my_amount)) + ' your share' : 'all up to date'}</div></div>`;
+    $('#r-up').innerHTML = mine.length ? `<ul class="due-list">${mine.map(u => {
+      const d = daysFromToday(u.due_date);
+      const when = u.overdue ? (isBills ? 'overdue' : 'late') : d === 0 ? 'today' : d === 1 ? 'tomorrow' : `in ${d} days`;
+      return `<li class="${u.overdue ? 'is-late' : ''}"><div class="due-date"><b>${new Date(u.due_date + 'T00:00:00').getDate()}</b><span>${new Date(u.due_date + 'T00:00:00').toLocaleDateString('en-AU', { month: 'short' })}</span></div>
+        <div class="due-main"><b>${esc(u.name)}</b><div class="hint">${when}${u.debt_id ? ' · loan repayment' : ''}</div></div>
+        <div class="due-amt ${isBills ? '' : 'in'}">${money(u.my_amount)}</div>
+        ${isBills && d <= 7 ? `<button class="small mark-paid" data-id="${u.item_id}" data-due="${u.due_date}">Paid</button>` : '<span></span>'}</li>`; }).join('')}</ul>
+      <p class="hint total-line">Total ${money(sum(mine, u => u.my_amount))}</p>` : '<p class="empty">Nothing in the next 5 weeks.</p>';
+    $('#r-up').querySelectorAll('.mark-paid').forEach(b => b.onclick = () => markPaid(b.dataset.id, b.dataset.due, () => recurringPage(kind)));
   };
-  let items = [];
+  let rows = [];
   const drawList = async () => {
-    items = await renderCrud($('#b-list'), 'recurring_items', {
-      onChange: async () => { await drawUpcoming(); await drawList(); },
-      extra: (r, i) => r.direction === 'out' && r.is_active ? `<button class="small b-paid" data-i="${i}">Mark paid</button>` : '',
+    rows = await renderCrud($('#r-list'), kind, {
+      filter: { direction: dir }, title: isBills ? 'All bills' : 'All income',
+      onChange: async () => { await drawTop(); await drawList(); },
+      extra: (r, i) => isBills && r.is_active ? `<button class="small b-paid" data-i="${i}">Paid</button>` : '',
     });
-    $('#b-list').querySelectorAll('.b-paid').forEach(b => b.onclick = () => { const r = items[b.dataset.i]; markPaid(r.id, r.next_due, bills); });
+    $('#r-list').querySelectorAll('.b-paid').forEach(b => b.onclick = () => { const r = rows[b.dataset.i]; markPaid(r.id, r.next_due, () => recurringPage(kind)); });
   };
-  await Promise.all([drawUpcoming(), drawList()]);
+  await Promise.all([drawTop(), drawList()]);
 }
+const bills = () => recurringPage('bills');
+const income = () => recurringPage('income');
 
 // ---------- DEBTS ----------
 async function debts() {
-  view.innerHTML = `<div class="grid" id="d-sum"></div><div class="card" id="d-list"></div><div class="card hidden" id="d-log"></div>`;
-  const sum = async () => {
-    const d = await q(sb.from('v_debt_summary').select('*').maybeSingle()) || {};
+  view.innerHTML = `<div class="page-head"><div><h1 class="page-title">Debts</h1><p class="hint">Everything owed, with a log of every call to creditors. Home loan balances update when you import.</p></div></div>
+    <div class="tiles" id="d-sum"></div>
+    <section class="card"><div class="sec-head"><div><h2>Who you owe</h2><p class="hint">Household balances · the long bars are the home loans</p></div></div><div id="d-chart"></div></section>
+    <section class="card" id="d-list"></section><section class="card hidden" id="d-log"></section>`;
+  const top = async () => {
+    const [d, all] = await Promise.all([q(sb.from('v_debt_summary').select('*').maybeSingle()), q(sb.from('debts').select('*').eq('status', 'active').order('current_balance', { ascending: false }))]);
+    const sd = d || {};
     $('#d-sum').innerHTML = `
-      <div class="stat warn"><div class="label">My total owed</div><div class="value">${money(d.my_total_owed || 0)}</div></div>
-      <div class="stat ${Number(d.my_total_arrears) > 0 ? 'bad' : ''}"><div class="label">Overdue (arrears)</div><div class="value">${money(d.my_total_arrears || 0)}</div></div>
-      <div class="stat"><div class="label">Minimum payments / month</div><div class="value">${money(d.my_monthly_minimums || 0)}</div></div>
-      <div class="stat good"><div class="label">On hardship arrangements</div><div class="value">${d.on_hardship || 0} of ${d.active_debts || 0}</div></div>`;
+      <div class="tile"><div class="tile-label">Total owed</div><div class="tile-value">${moneyRound(sum(all, x => x.current_balance))}</div><div class="tile-sub">household · your share ${moneyRound(sd.my_total_owed || 0)}</div></div>
+      <div class="tile"><div class="tile-label">Repayments per month</div><div class="tile-value">${moneyRound(sum(all, x => (x.min_payment || 0) * PER_MONTH[x.payment_frequency || 'monthly']))}</div><div class="tile-sub">your share ${moneyRound(sd.my_monthly_minimums || 0)}</div></div>
+      <div class="tile ${Number(sd.my_total_arrears) > 0 ? 'bad' : ''}"><div class="tile-label">Overdue</div><div class="tile-value">${moneyRound(sum(all, x => x.arrears_amount))}</div><div class="tile-sub">entered as arrears</div></div>
+      <div class="tile ${sd.on_hardship ? 'good' : ''}"><div class="tile-label">On hardship</div><div class="tile-value">${sd.on_hardship || 0} <small>of ${sd.active_debts || 0}</small></div><div class="tile-sub">${sd.hardship_to_request ? sd.hardship_to_request + ' to request' : 'National Debt Helpline 1800 007 007'}</div></div>`;
+    hbarChart($('#d-chart'), { items: all.map(x => ({ label: x.creditor, value: Number(x.current_balance),
+      note: x.current_balance > 0 ? null : 'balance not entered — click Edit below', badge: x.arrears_amount > 0 ? 'overdue' : null, badgeClass: 'bad' })), color: SERIES.orange });
   };
   const showLog = async (debt) => {
     const box = $('#d-log'); box.classList.remove('hidden');
-    await renderCrud(box, 'debt_contacts', { filter: { debt_id: debt.id }, title: `Contact log — ${debt.creditor}` });
+    await renderCrud(box, 'debt_contacts', { filter: { debt_id: debt.id }, title: `Contact log — ${debt.creditor}`, subtitle: 'Every call, email or letter: who you spoke to, what was agreed, when to follow up.' });
     box.scrollIntoView({ behavior: 'smooth' });
   };
   let current = [];
   const list = async () => {
-    current = await renderCrud($('#d-list'), 'debts', {
-      onChange: async () => { await sum(); await list(); },
-      extra: (r, i) => `<button class="small log" data-i="${i}">Log</button>`,
+    current = await renderCrud($('#d-list'), 'debts', { title: 'All debts',
+      onChange: async () => { await top(); await list(); },
+      extra: (r, i) => `<button class="small log" data-i="${i}">Calls</button>`,
     });
     $('#d-list').querySelectorAll('.log').forEach(b => b.onclick = () => showLog(current[b.dataset.i]));
   };
-  await Promise.all([sum(), list()]);
+  await Promise.all([top(), list()]);
 }
 
 // ---------- SHARED ----------
 async function shared() {
-  view.innerHTML = `<div class="grid" id="s-bal"></div><div class="card" id="s-list"></div>`;
+  view.innerHTML = `<div class="page-head"><div><h1 class="page-title">Shared costs</h1><p class="hint">Who paid what, and who owes whom.</p></div></div><div class="grid" id="s-bal"></div><div class="card" id="s-list"></div>`;
   const partner = cache.settings?.partner_label || 'Ex-partner';
   const bal = async () => {
     const s = await q(sb.from('v_shared_balance').select('*').maybeSingle());
@@ -902,7 +1020,7 @@ async function shared() {
 // ---------- SETUP ----------
 async function setup() {
   const s = cache.settings || {};
-  view.innerHTML = `<div class="card"><h2>Settings</h2><form id="set"><div class="formgrid">
+  view.innerHTML = `<div class="page-head"><div><h1 class="page-title">Setup</h1><p class="hint">Settings, bank accounts, categories and sorting rules.</p></div></div><div class="card"><h2>Settings</h2><form id="set"><div class="formgrid">
       <label>Your name <input name="display_name" value="${esc(s.display_name)}"></label>
       <label>What to call your ex-partner <input name="partner_label" value="${esc(s.partner_label || 'Ex-partner')}"></label>
       <label>Your usual share of shared costs % <input type="number" step="1" min="0" max="100" name="default_my_share_pct" value="${esc(s.default_my_share_pct ?? 50)}"></label>
@@ -923,11 +1041,16 @@ async function setup() {
 }
 
 // ---------- navigation & auth ----------
-const VIEWS = { dashboard, budget, transactions, sort: sortView, import: importView, bills, debts, shared, setup };
+const VIEWS = { dashboard, budget, bills, income, debts, transactions, sort: sortView, import: importView, shared, setup };
+async function updateSortBadge() {
+  const { count } = await sb.from('transactions').select('id', { count: 'exact', head: true }).is('category_id', null);
+  const b = $('#sort-badge'); if (b) { b.textContent = count || ''; b.classList.toggle('hidden', !count); }
+}
 async function show(name, opts) {
   document.querySelectorAll('#tabs button').forEach(b => b.classList.toggle('active', b.dataset.view === name));
   history.replaceState(null, '', '#' + name);
-  try { await VIEWS[name](opts); } catch (e) { view.innerHTML = `<div class="card"><p class="msg error">Something went wrong loading this page: ${esc(e.message)}</p></div>`; }
+  window.scrollTo(0, 0);
+  try { await VIEWS[name](opts); updateSortBadge(); } catch (e) { view.innerHTML = `<div class="card"><p class="msg error">Something went wrong loading this page: ${esc(e.message)}</p></div>`; }
 }
 document.querySelectorAll('#tabs button').forEach(b => b.onclick = () => show(b.dataset.view));
 

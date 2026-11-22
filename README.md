@@ -9,19 +9,18 @@ debt register with creditor contact log, shared costs with ex-partner, and a das
   The key in `app/config.js` is the *publishable* key and is safe to be public.
   Never store full card, bank account or ID numbers anywhere in the app.
 
-## What's in Stage 1
+## Screens
 
-| Screen | What it does |
+| Screen | What it's for |
 |---|---|
-| Dashboard | Money in accounts, this month in/out, regular monthly gap, total debt and arrears, shared balance, next 3 weeks of bills/income, spending vs budget, creditor follow-ups due |
-| Budget | Three tabs — **Overall household**, **Michael**, **Taslyn** — regular income, bills and debt costs split by each item's share %, plus actual average spending and income over the last 6 months |
-| Transactions | Filter by month / account / search; change category; tick "shared"; **Make rule** to auto-categorise similar transactions forever |
-| To sort | Every uncategorised transaction grouped by payee, biggest first. Pick a category (or **+ New category…**), then **One-off** (just these, no rule) or **Make rule** (these and all future ones). **Show** lets you set single transactions |
-| Import | Choose several files at once: CommBank/Westpac **CSV** or the Westpac app's **Account activity PDF**. Accounts are matched by last 4 digits or created for you with the right starting balance. Duplicates skipped. Matches bills. **Undo** any import |
-| Bills & income | Recurring bills and income (weekly / fortnightly / monthly …), shared %, next 5 weeks cash view |
-| Debts | Every debt with arrears, minimums, priority (1 = housing/power), hardship status; **Log** button keeps a record of every creditor call |
-| Shared costs | Who paid what, your share %, settlements, running "who owes whom" |
-| Setup | Settings, bank accounts, categories and budgets, auto-categorising rules |
+| **Home** | Alerts, four key numbers, what's coming up in the next 14 days (with **Paid** buttons), where the money went (this month / last month / 3-month average), and a 12-month money in vs out chart |
+| **Budget** | Household / Michael / Taslyn: regular income against bills and debt repayments, what's left each month, and average everyday spending |
+| **Bills** | Regular payments including loan repayments: per-month totals, due in the next 5 weeks, the full list |
+| **Income** | Regular money coming in: per-month totals, expected in the next 5 weeks, the full list |
+| **Debts** | Who you owe (chart), repayments, overdue amounts, hardship status, and a call log per creditor |
+| **Transactions** | Every transaction; filter by months (tick several), account, category, search; totals follow the filter; one-off flag |
+| **To sort** | Uncategorised transactions grouped by payee; **One-off** or **Make rule**; **+ New category…** from any category list |
+| Import · Shared · Setup | Statement import (CSV/PDF, multi-account), shared-cost ledger, settings/accounts/categories/rules |
 
 ## First-time setup (about 15 minutes)
 
