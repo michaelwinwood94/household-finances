@@ -1,7 +1,7 @@
 import { createClient } from 'https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2/+esm';
-import { SUPABASE_URL, SUPABASE_PUBLISHABLE_KEY } from './config.js?v=202611230021';
-import { parseBankCsv, parseWestpacActivity, splitAccounts } from './csv.js?v=202611230021';
-import { columnChart, hbarChart, SERIES, moneyRound, moneyCompact } from './charts.js?v=202611230021';
+import { SUPABASE_URL, SUPABASE_PUBLISHABLE_KEY } from './config.js?v=202611230023';
+import { parseBankCsv, parseWestpacActivity, splitAccounts } from './csv.js?v=202611230023';
+import { columnChart, hbarChart, SERIES, moneyRound, moneyCompact } from './charts.js?v=202611230023';
 
 const sb = createClient(SUPABASE_URL, SUPABASE_PUBLISHABLE_KEY);
 const $ = (s, el = document) => el.querySelector(s);
@@ -236,7 +236,7 @@ if (!['all', 'me', 'partner'].includes(personView)) personView = 'all';
 const personNames = () => ({ all: 'Household', me: cache.settings?.display_name || 'Me', partner: cache.settings?.partner_label || 'Partner' });
 const personName = () => personNames()[personView];
 // Pages that change with the person switch; others show household figures and say so
-const PERSON_PAGES = ['dashboard', 'budget', 'bills', 'income', 'debts', 'tax'];
+const PERSON_PAGES = ['dashboard', 'budget', 'bills', 'income', 'debts', 'pay', 'tax'];
 function renderWhoSwitch() {
   const box = $('#whoswitch'); if (!box) return;
   box.innerHTML = `<span class="who-label">Showing</span>` + Object.entries(personNames()).map(([k, v]) =>
@@ -1286,6 +1286,185 @@ async function taxView() {
   draw();
 }
 
+// ---------- PAYSLIPS ----------
+const SG_RATE = 0.12; // super guarantee 2026-27 (ATO): 12% of qualifying earnings, paid each payday from 1 Jul 2026
+let payFy = null;
+function payslipForm(row = null) {
+  const me = cache.settings?.display_name || 'Me', partner = cache.settings?.partner_label || 'Partner';
+  const v = k => row?.[k] ?? '';
+  const num = (k, lbl, hint = '') => `<label>${lbl}${hint ? ` <span class="hint">${hint}</span>` : ''}<input type="number" step="0.01" min="0" name="${k}" value="${esc(v(k))}"></label>`;
+  return new Promise(resolve => {
+    const dlg = document.createElement('dialog');
+    dlg.innerHTML = `<form method="dialog"><h2>${row ? 'Edit' : 'Add'} payslip</h2>
+      <div class="formgrid">
+        <label>Whose payslip <select name="person"><option value="me">${esc(me)}</option><option value="partner">${esc(partner)}</option></select></label>
+        <label>Employer <input name="employer" required value="${esc(v('employer'))}"></label>
+        <label>Pay date <input type="date" name="pay_date" required value="${esc(v('pay_date') || today())}"></label>
+        <label>Hours worked <input type="number" step="0.01" min="0" name="hours" value="${esc(v('hours'))}"></label>
+        <label>Period from <input type="date" name="period_start" value="${esc(v('period_start'))}"></label>
+        <label>Period to <input type="date" name="period_end" value="${esc(v('period_end'))}"></label>
+      </div>
+      <h3>Earnings (before tax)</h3>
+      <div class="formgrid">
+        ${num('ordinary_pay', 'Ordinary pay', 'base hours')}${num('overtime_pay', 'Overtime')}${num('allowances', 'Allowances')}
+        ${num('bonus', 'Bonus / commission')}${num('leave_pay', 'Leave paid', 'annual, sick')}
+        <label>Gross pay <span class="hint">adds up the boxes above — or type the payslip's total</span><input type="number" step="0.01" min="0" name="gross_pay" required value="${esc(v('gross_pay'))}"></label>
+      </div>
+      <h3>Tax &amp; deductions</h3>
+      <div class="formgrid">
+        ${num('tax_withheld', 'Tax withheld (PAYG)')}${num('salary_sacrifice', 'Salary sacrifice', 'before tax')}${num('other_deductions', 'Other deductions', 'after tax')}
+        <label>Net pay (take-home) <span class="hint">as printed</span><input type="number" step="0.01" min="0" name="net_pay" required value="${esc(v('net_pay'))}"></label>
+      </div>
+      <p class="callout" id="ps-check"></p>
+      <h3>Super, leave &amp; year to date <span class="hint">(optional)</span></h3>
+      <div class="formgrid">
+        ${num('super_employer', 'Employer super')}${num('annual_leave_hours', 'Annual leave balance', 'hours')}${num('sick_leave_hours', 'Sick leave balance', 'hours')}
+        ${num('ytd_gross', 'YTD gross')}${num('ytd_tax', 'YTD tax')}${num('ytd_super', 'YTD super')}
+      </div>
+      <label>Notes <textarea name="notes" rows="2">${esc(v('notes'))}</textarea></label>
+      <div class="row"><button class="primary" value="save">Save</button><button value="cancel" formnovalidate>Cancel</button></div></form>`;
+    document.body.appendChild(dlg);
+    const f = $('form', dlg);
+    f.person.value = row?.person || (personView === 'partner' ? 'partner' : 'me');
+    const n = k => Number(f[k].value || 0);
+    let grossTouched = !!row;
+    const parts = ['ordinary_pay', 'overtime_pay', 'allowances', 'bonus', 'leave_pay'];
+    const check = () => {
+      const partSum = parts.reduce((t, k) => t + n(k), 0);
+      if (!grossTouched && partSum) f.gross_pay.value = partSum.toFixed(2);
+      const gross = n('gross_pay'), calcNet = gross - n('salary_sacrifice') - n('tax_withheld') - n('other_deductions');
+      const sg = (n('ordinary_pay') + n('leave_pay') + n('salary_sacrifice')) * SG_RATE;
+      const msgs = [];
+      if (gross && f.net_pay.value !== '') {
+        const diff = n('net_pay') - calcNet;
+        msgs.push(Math.abs(diff) < 0.05 ? `✓ Adds up: ${money(gross)} gross − deductions = ${money(calcNet)} take-home.` : `Check: gross minus tax and deductions is ${money(calcNet)}, but net pay is ${money(n('net_pay'))} (difference ${money(diff)}). A box may be missing.`);
+      }
+      if (gross) msgs.push(`Tax rate this pay: ${(n('tax_withheld') / gross * 100).toFixed(1)}%.`);
+      if (n('ordinary_pay') && f.super_employer.value !== '') msgs.push(n('super_employer') + 0.05 >= sg ? `✓ Super looks right (12% minimum ≈ ${money(sg)}).` : `Super may be short: 12% minimum is about ${money(sg)}, payslip shows ${money(n('super_employer'))}.`);
+      const box = $('#ps-check', dlg); box.innerHTML = msgs.join('<br>'); box.className = 'callout ' + (msgs.some(m => m.startsWith('Check') || m.startsWith('Super may')) ? 'bad' : msgs.length ? 'good' : '');
+    };
+    f.gross_pay.addEventListener('input', () => { grossTouched = f.gross_pay.value !== ''; });
+    f.addEventListener('input', check); check();
+    let done = false;
+    f.addEventListener('submit', async e => {
+      if (e.submitter?.value !== 'save') return;
+      e.preventDefault();
+      const out = {};
+      for (const el of f.elements) {
+        if (!el.name) continue;
+        out[el.name] = el.type === 'number' ? (el.value === '' ? null : Number(el.value)) : (el.value === '' ? null : el.value);
+      }
+      for (const k of [...parts, 'tax_withheld', 'salary_sacrifice', 'other_deductions', 'super_employer']) if (out[k] == null) out[k] = 0;
+      try {
+        if (row) await q(sb.from('payslips').update(out).eq('id', row.id)); else await q(sb.from('payslips').insert(out));
+        toast('Payslip saved'); done = true; dlg.close(); resolve(true);
+      } catch { /* toast shown */ }
+    });
+    dlg.addEventListener('close', () => { dlg.remove(); if (!done) resolve(false); });
+    dlg.showModal();
+  });
+}
+
+async function payView() {
+  view.innerHTML = '<p class="loading">Loading…</p>';
+  const all = await q(sb.from('payslips').select('*').order('pay_date', { ascending: false }));
+  const me = cache.settings?.display_name || 'Me', partner = cache.settings?.partner_label || 'Partner';
+  const who = { me, partner };
+  const mine = all.filter(p => personView === 'all' || p.person === personView);
+  const fys = [...new Set([fyOf(today()), ...mine.map(p => fyOf(p.pay_date))])].sort().reverse();
+  if (!payFy || !fys.includes(payFy)) payFy = fys[0];
+  const rows = mine.filter(p => fyOf(p.pay_date) === payFy);
+  const label = personView === 'all' ? 'Household' : personName();
+
+  if (!all.length) {
+    view.innerHTML = `<div class="page-head"><div><h1 class="page-title">Payslips</h1><p class="hint">Wages, tax, super and leave from each payslip.</p></div></div>
+      <section class="card"><h2>No payslips yet</h2>
+        <p>When either of you starts work, add each payslip here (it takes about a minute). You'll then see:</p>
+        <ul><li><b>Gross pay, tax and take-home</b> for the financial year, by month</li>
+          <li><b>Your tax rate</b> on each pay, and whether tax is adding up</li>
+          <li><b>A super check</b> — employers must pay at least 12% of ordinary earnings, every payday</li>
+          <li><b>Leave balances</b> and year-to-date totals from your latest payslip</li>
+          <li>A <b>download</b> for tax time</li></ul>
+        <p class="hint">Tip: once pay is regular, use <b>Set up as regular income</b> so it shows in Income and the Budget.</p>
+        <button class="primary" id="ps-add">+ Add a payslip</button></section>`;
+    $('#ps-add').onclick = async () => { if (await payslipForm()) payView(); };
+    return;
+  }
+
+  const t = k => sum(rows, p => p[k]);
+  const gross = t('gross_pay'), tax = t('tax_withheld'), net = t('net_pay'), sup = t('super_employer');
+  const sgDue = sum(rows, p => (Number(p.ordinary_pay) + Number(p.leave_pay) + Number(p.salary_sacrifice)) * SG_RATE);
+  const shortSlips = rows.filter(p => p.ordinary_pay > 0 && Number(p.super_employer) + 0.05 < (Number(p.ordinary_pay) + Number(p.leave_pay) + Number(p.salary_sacrifice)) * SG_RATE);
+  const latest = {}; for (const p of mine) if (!latest[p.person]) latest[p.person] = p;
+
+  view.innerHTML = `<div class="page-head"><div><h1 class="page-title">Payslips</h1><div class="who-now inline">${esc(label)}</div></div>
+      <div class="row"><select id="ps-fy" style="width:auto;margin:0" aria-label="Financial year">${fys.map(f => `<option value="${f}" ${f === payFy ? 'selected' : ''}>FY ${f.slice(0, 4)}–${f.slice(5)}</option>`).join('')}</select>
+        <button class="primary" id="ps-add">+ Add payslip</button></div></div>
+    <div class="tiles">
+      <div class="tile"><div class="tile-label">Gross pay</div><div class="tile-value">${moneyRound(gross)}</div><div class="tile-sub">${rows.length} payslip${rows.length === 1 ? '' : 's'} this year</div></div>
+      <div class="tile"><div class="tile-label">Tax withheld</div><div class="tile-value">${moneyRound(tax)}</div><div class="tile-sub">${gross ? (tax / gross * 100).toFixed(1) : 0}% of gross</div></div>
+      <div class="tile good"><div class="tile-label">Take-home</div><div class="tile-value">${moneyRound(net)}</div><div class="tile-sub">${rows.length ? 'average ' + moneyRound(net / rows.length) + ' a pay' : ''}</div></div>
+      <div class="tile ${shortSlips.length ? 'bad' : ''}"><div class="tile-label">Employer super</div><div class="tile-value">${moneyRound(sup)}</div><div class="tile-sub">${shortSlips.length ? `${shortSlips.length} payslip(s) look short` : sgDue ? `12% minimum ≈ ${moneyRound(sgDue)} ✓` : 'enter ordinary pay to check'}</div></div>
+    </div>
+    <div class="grid2">
+      <section class="card"><div class="sec-head"><div><h2>Pay by month</h2><p class="hint">Take-home and tax withheld</p></div></div><div id="ps-chart"></div></section>
+      <section class="card"><div class="sec-head"><div><h2>Latest payslip</h2><p class="hint">Leave balances and year to date</p></div></div>
+        ${Object.entries(latest).map(([person, p]) => `<div class="latest"><b>${esc(who[person])}</b> · ${esc(p.employer)} · ${esc(fmtDate(p.pay_date))}
+          <div class="tablewrap"><table class="list"><tbody>
+            ${p.annual_leave_hours != null ? `<tr><td>Annual leave</td><td class="num">${p.annual_leave_hours} h <span class="hint">≈ ${(p.annual_leave_hours / 7.6).toFixed(1)} days</span></td></tr>` : ''}
+            ${p.sick_leave_hours != null ? `<tr><td>Sick leave</td><td class="num">${p.sick_leave_hours} h</td></tr>` : ''}
+            ${p.ytd_gross != null ? `<tr><td>YTD gross</td><td class="num">${money(p.ytd_gross)}</td></tr>` : ''}
+            ${p.ytd_tax != null ? `<tr><td>YTD tax</td><td class="num">${money(p.ytd_tax)}</td></tr>` : ''}
+            ${p.ytd_super != null ? `<tr><td>YTD super</td><td class="num">${money(p.ytd_super)}</td></tr>` : ''}
+            <tr><td colspan="2"><button class="small ps-regular" data-id="${p.id}">Set up as regular income</button></td></tr>
+          </tbody></table></div></div>`).join('') || '<p class="empty">—</p>'}</section>
+    </div>
+    <section class="card"><div class="sec-head"><div><h2>Payslips</h2></div><button class="small" id="ps-csv">Download (CSV)</button></div>
+      ${rows.length ? `<div class="tablewrap"><table class="list"><thead><tr><th>Pay date</th>${personView === 'all' ? '<th>Who</th>' : ''}<th>Employer</th><th class="num">Hours</th><th class="num">Gross</th><th class="num">Tax</th><th class="num">Take-home</th><th class="num">Super</th><th></th></tr></thead><tbody>
+        ${rows.map((p, i) => `<tr><td>${esc(fmtDate(p.pay_date))}</td>${personView === 'all' ? `<td>${esc(who[p.person])}</td>` : ''}<td>${esc(p.employer)}</td><td class="num">${p.hours ?? '—'}</td>
+          <td class="num">${money(p.gross_pay)}</td><td class="num">${money(p.tax_withheld)}</td><td class="num"><b>${money(p.net_pay)}</b></td>
+          <td class="num">${money(p.super_employer)}${shortSlips.includes(p) ? ' <span class="pill bad">short?</span>' : ''}</td>
+          <td class="actions"><button class="small ps-edit" data-i="${i}">Edit</button><button class="small ghost ps-del" data-i="${i}" aria-label="Delete">✕</button></td></tr>`).join('')}</tbody>
+        <tfoot><tr class="total"><td><b>Total</b></td>${personView === 'all' ? '<td></td>' : ''}<td></td><td class="num">${sum(rows, p => p.hours) || '—'}</td><td class="num"><b>${money(gross)}</b></td><td class="num">${money(tax)}</td><td class="num"><b>${money(net)}</b></td><td class="num">${money(sup)}</td><td></td></tr></tfoot></table></div>`
+        : '<p class="empty">No payslips in this financial year.</p>'}</section>
+    <p class="hint">Super check uses the 12% super guarantee on ordinary pay, leave and salary sacrifice. Overtime usually doesn't attract super. From 1 July 2026 employers must pay super within 7 days of each payday — check it arrived in your super fund's app.</p>`;
+
+  const byM = new Map();
+  for (const p of rows) { const m = p.pay_date.slice(0, 7); const o = byM.get(m) || { net: 0, tax: 0 }; o.net += Number(p.net_pay); o.tax += Number(p.tax_withheld); byM.set(m, o); }
+  const ms = [...byM.keys()].sort();
+  if (ms.length) columnChart($('#ps-chart'), { title: 'Pay by month', labels: ms.map(m => new Date(m + '-01T00:00:00').toLocaleDateString('en-AU', { month: 'short' })),
+    tipLabels: ms.map(m => new Date(m + '-01T00:00:00').toLocaleDateString('en-AU', { month: 'long', year: 'numeric' })),
+    series: [{ name: 'Take-home', color: SERIES.blue, values: ms.map(m => byM.get(m).net) }, { name: 'Tax withheld', color: SERIES.orange, values: ms.map(m => byM.get(m).tax) }], height: 200 });
+  else $('#ps-chart').innerHTML = '<p class="empty">No payslips this year.</p>';
+
+  $('#ps-fy').onchange = e => { payFy = e.target.value; payView(); };
+  $('#ps-add').onclick = async () => { if (await payslipForm()) payView(); };
+  view.querySelectorAll('.ps-edit').forEach(b => b.onclick = async () => { if (await payslipForm(rows[b.dataset.i])) payView(); });
+  view.querySelectorAll('.ps-del').forEach(b => b.onclick = async () => {
+    if (!confirm('Delete this payslip? This cannot be undone.')) return;
+    await q(sb.from('payslips').delete().eq('id', rows[b.dataset.i].id)); toast('Deleted'); payView();
+  });
+  view.querySelectorAll('.ps-regular').forEach(b => b.onclick = async () => {
+    const p = all.find(x => x.id === b.dataset.id);
+    const days = p.period_start && p.period_end ? dayDiff(p.period_start, p.period_end) : 14;
+    const freq = days <= 8 ? 'weekly' : days <= 16 ? 'fortnightly' : 'monthly';
+    const next = new Date(p.pay_date + 'T00:00:00'); next.setDate(next.getDate() + (freq === 'weekly' ? 7 : freq === 'fortnightly' ? 14 : 0)); if (freq === 'monthly') next.setMonth(next.getMonth() + 1);
+    const work = cache.categories.find(c => c.name === 'Work income');
+    if (!confirm(`Add "${p.employer} wages" as regular income: ${money(p.net_pay)} ${freq}, all ${who[p.person]}'s?`)) return;
+    await q(sb.from('recurring_items').insert({ name: `${p.employer} wages (${who[p.person]})`, direction: 'in', amount: p.net_pay, frequency: freq,
+      next_due: next.toLocaleDateString('en-CA'), category_id: work?.id || null, match_text: p.employer.toUpperCase().slice(0, 20), my_share_pct: p.person === 'me' ? 100 : 0,
+      notes: 'Set up from a payslip — take-home pay. Update the amount if it changes.' }));
+    toast('Added to Income'); 
+  });
+  $('#ps-csv').onclick = () => {
+    const head = ['Pay date', 'Who', 'Employer', 'Period from', 'Period to', 'Hours', 'Ordinary', 'Overtime', 'Allowances', 'Bonus', 'Leave pay', 'Gross', 'Tax withheld', 'Salary sacrifice', 'Other deductions', 'Net pay', 'Employer super', 'YTD gross', 'YTD tax', 'YTD super'];
+    const lines = [head, ...rows.map(p => [p.pay_date, who[p.person], p.employer, p.period_start, p.period_end, p.hours, p.ordinary_pay, p.overtime_pay, p.allowances, p.bonus, p.leave_pay, p.gross_pay, p.tax_withheld, p.salary_sacrifice, p.other_deductions, p.net_pay, p.super_employer, p.ytd_gross, p.ytd_tax, p.ytd_super])];
+    const csv = lines.map(r => r.map(v => `"${String(v ?? '').replace(/"/g, '""')}"`).join(',')).join('\r\n');
+    const a = document.createElement('a'); a.href = URL.createObjectURL(new Blob([csv], { type: 'text/csv' }));
+    a.download = `payslips-${payFy}-${label.toLowerCase().replace(/\W+/g, '-')}.csv`; a.click(); URL.revokeObjectURL(a.href);
+  };
+}
+
 // ---------- SHARED ----------
 async function shared() {
   view.innerHTML = `<div class="page-head"><div><h1 class="page-title">Shared costs</h1><p class="hint">Who paid what, and who owes whom.</p></div></div><div class="grid" id="s-bal"></div><div class="card" id="s-list"></div>`;
@@ -1324,7 +1503,7 @@ async function setup() {
 }
 
 // ---------- navigation & auth ----------
-const VIEWS = { dashboard, budget, bills, income, debts, transactions, sort: sortView, import: importView, shared, tax: taxView, setup };
+const VIEWS = { dashboard, budget, bills, income, debts, transactions, sort: sortView, import: importView, shared, pay: payView, tax: taxView, setup };
 async function updateSortBadge() {
   const { count } = await sb.from('transactions').select('id', { count: 'exact', head: true }).is('category_id', null);
   const b = $('#sort-badge'); if (b) { b.textContent = count || ''; b.classList.toggle('hidden', !count); }

@@ -1,0 +1,3 @@
+-- Payslips per person: earnings breakdown, tax withheld, deductions, take-home, employer super,
+-- leave balances and year-to-date figures. RLS own rows only (same pattern as 001).
+-- Full SQL in the Supabase migration history (014_payslips).
