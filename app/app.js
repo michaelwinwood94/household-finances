@@ -1,8 +1,8 @@
 import { createClient } from 'https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2/+esm';
-import { SUPABASE_URL, SUPABASE_PUBLISHABLE_KEY } from './config.js?v=202611230029';
-import { parseBankCsv, parseWestpacActivity, splitAccounts, linesFromItems } from './csv.js?v=202611230029';
-import { readPayslip, toLines } from './payslip.js?v=202611230029';
-import { columnChart, hbarChart, SERIES, moneyRound, moneyCompact } from './charts.js?v=202611230029';
+import { SUPABASE_URL, SUPABASE_PUBLISHABLE_KEY } from './config.js?v=202611230030';
+import { parseBankCsv, parseWestpacActivity, splitAccounts, linesFromItems } from './csv.js?v=202611230030';
+import { readPayslip, toLines } from './payslip.js?v=202611230030';
+import { columnChart, hbarChart, SERIES, moneyRound, moneyCompact } from './charts.js?v=202611230030';
 
 const sb = createClient(SUPABASE_URL, SUPABASE_PUBLISHABLE_KEY);
 const $ = (s, el = document) => el.querySelector(s);
@@ -1296,7 +1296,7 @@ function payslipForm(row = null, scan = null) {
   const num = (k, lbl, hint = '') => `<label>${lbl}${hint ? ` <span class="hint">${hint}</span>` : ''}<input type="number" step="0.01" min="0" name="${k}" value="${esc(v(k))}"></label>`;
   return new Promise(resolve => {
     const dlg = document.createElement('dialog');
-    dlg.innerHTML = `<form method="dialog"><h2>${row ? 'Edit' : scan ? 'Check scanned payslip' : 'Add'} payslip</h2>
+    dlg.innerHTML = `<form method="dialog"><h2>${row ? 'Edit' : scan ? 'Check scanned' : 'Add'} payslip</h2>
       ${scan ? `<p class="callout ${scan.found.size ? 'good' : 'bad'}">${scan.found.size ? `Read <b>${scan.found.size}</b> value${scan.found.size === 1 ? '' : 's'} from <b>${esc(scan.file)}</b> — they're outlined in green. <b>Check every number against the payslip</b>, fill any blanks, then Save.` : ''}${scan.notes.map(n => `<br>• ${esc(n)}`).join('')}</p>` : ''}
       <div class="formgrid">
         <label>Whose payslip <select name="person"><option value="me">${esc(me)}</option><option value="partner">${esc(partner)}</option></select></label>
