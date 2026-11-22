@@ -482,9 +482,17 @@ async function importView() {
           jobs.filter(o => o !== j && o.accountId === 'new' && o.newName === j.newName).forEach(o => o.accountId = accountId);
         }
         // send in chunks so very long histories go through reliably
+        // Number identical same-day transactions across the whole file, so two genuine
+        // $25 payments on the same day are never mistaken for a duplicate when sent in chunks.
+        const seen = new Map();
+        const rows = p.rows.map(r => {
+          const key = `${r.date}|${r.amount.toFixed(2)}|${r.description.replace(/\s+/g, ' ').trim().toUpperCase()}`;
+          const occ = (seen.get(key) || 0) + 1; seen.set(key, occ);
+          return { ...r, occ };
+        });
         let tot = { inserted: 0, duplicates: 0, linked_to_bills: 0, shared_added: 0 };
-        for (let k = 0; k < p.rows.length; k += 1000) {
-          const res = await q(sb.rpc('import_transactions', { p_account_id: accountId, p_rows: p.rows.slice(k, k + 1000), p_filename: j.file.name, p_format: p.format }));
+        for (let k = 0; k < rows.length; k += 1000) {
+          const res = await q(sb.rpc('import_transactions', { p_account_id: accountId, p_rows: rows.slice(k, k + 1000), p_filename: j.file.name, p_format: p.format }));
           for (const key in tot) tot[key] += res[key] || 0;
         }
         results.push(`<li><b>${esc(j.file.name)}</b> → ${esc(refName('accounts', accountId))}: ${tot.inserted} new, ${tot.duplicates} already there, ${tot.linked_to_bills} matched to bills, ${tot.shared_added} added to shared costs</li>`);

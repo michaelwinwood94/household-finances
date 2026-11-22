@@ -1,0 +1,6 @@
+-- import_transactions now accepts an optional "occ" per row (numbered by the app across the whole file),
+-- so a big file sent in 1,000-row chunks can't drop a genuine repeat that falls on a chunk boundary.
+-- Full function body: identical to 002 except the src/keyed CTEs:
+--   src:   nullif(r->>'occ','')::int as occ_in
+--   keyed: coalesce(s.occ_in, row_number() over (partition by d, amt, upper(descr) order by ord)) as occ
+-- (Applied to the live project on 22 Nov 2026; see Supabase migration history for the full text.)
