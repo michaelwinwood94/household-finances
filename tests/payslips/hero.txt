@@ -1,0 +1,18 @@
+Harvey Mowing Co Pty Ltd   ABN 12 345 678 901
+PAYSLIP
+Employee: Michael Winwood
+Pay Period: 03/11/2026 - 16/11/2026
+Payment Date: 19/11/2026
+
+Description            Hours     Rate      This Pay      YTD
+Ordinary Hours         76.00    31.58      2,400.08     9,600.32
+Overtime 1.5x           4.00    47.37        189.48       378.96
+Tool Allowance                                25.00       100.00
+Gross Earnings                             2,614.56    10,079.28
+PAYG Tax                                     412.00     1,590.00
+Net Pay                                    2,202.56     8,489.28
+Superannuation Guarantee (12%)               288.01     1,152.04
+Super Fund: AustralianSuper  Member No 1234567
+Leave Balances
+Annual Leave balance          45.60 hours
+Personal/Carer's Leave balance 22.80 hours

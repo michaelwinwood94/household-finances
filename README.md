@@ -20,7 +20,7 @@ debt register with creditor contact log, shared costs with ex-partner, and a das
 | **Debts** | Who you owe (chart), repayments, overdue amounts, hardship status, and a call log per creditor |
 | **Transactions** | Every transaction; filter by months (tick several), account, category, search; totals follow the filter; one-off flag |
 | **To sort** | Uncategorised transactions grouped by payee; **One-off** or **Make rule**; **+ New category…** from any category list |
-| Payslips | Per person: add each payslip (earnings, tax, deductions, take-home, employer super, leave, YTD). Live check that it adds up and that super is at least 12%; totals by financial year, monthly chart, CSV, and 'Set up as regular income' |
+| Payslips | Per person: **Scan payslip** (PDF or photo — read in the browser, every value checked before saving) or type one in; each payslip (earnings, tax, deductions, take-home, employer super, leave, YTD). Live check that it adds up and that super is at least 12%; totals by financial year, monthly chart, CSV, and 'Set up as regular income' |
 | Tax | Per person (Michael or Taslyn) and financial year: board received, claimable share of house costs (ATO floor-area × time method), net rental income, Centrelink board-income estimate, CSV for a tax agent, print |
 | Import · Shared · Setup | Statement import (CSV/PDF, multi-account), shared-cost ledger, settings/accounts/categories/rules |
 
@@ -68,6 +68,7 @@ Starter categories and ~30 auto-categorising rules are added automatically.
 - Database: import, duplicate skipping, rule categorising, bill matching and due-date roll-forward,
   shared-cost creation, all dashboard views — tested with sample data, then removed.
 - Security: a second test user could not see or write the first user's data. Supabase security advisor: no issues.
+- Payslip reader: `node tests/payslip.test.mjs` (two PDF layouts + an OCR'd photo, all made-up)
 - CSV parser: `node tests/csv.test.mjs` (Westpac, CommBank, generic, bad files).
 - Real statements (22 Nov 2026): CommBank CSV 2,580 rows, Westpac Choice PDF 86 rows, two Rocket Repay home-loan PDFs 100 rows each — all parsed with nothing skipped; PDF results checked against a second PDF reader.
 - Every screen rendered in a headless browser at desktop and phone size with no script errors.

@@ -1,7 +1,8 @@
 import { createClient } from 'https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2/+esm';
-import { SUPABASE_URL, SUPABASE_PUBLISHABLE_KEY } from './config.js?v=202611230023';
-import { parseBankCsv, parseWestpacActivity, splitAccounts } from './csv.js?v=202611230023';
-import { columnChart, hbarChart, SERIES, moneyRound, moneyCompact } from './charts.js?v=202611230023';
+import { SUPABASE_URL, SUPABASE_PUBLISHABLE_KEY } from './config.js?v=202611230029';
+import { parseBankCsv, parseWestpacActivity, splitAccounts, linesFromItems } from './csv.js?v=202611230029';
+import { readPayslip, toLines } from './payslip.js?v=202611230029';
+import { columnChart, hbarChart, SERIES, moneyRound, moneyCompact } from './charts.js?v=202611230029';
 
 const sb = createClient(SUPABASE_URL, SUPABASE_PUBLISHABLE_KEY);
 const $ = (s, el = document) => el.querySelector(s);
@@ -1289,13 +1290,14 @@ async function taxView() {
 // ---------- PAYSLIPS ----------
 const SG_RATE = 0.12; // super guarantee 2026-27 (ATO): 12% of qualifying earnings, paid each payday from 1 Jul 2026
 let payFy = null;
-function payslipForm(row = null) {
+function payslipForm(row = null, scan = null) {
   const me = cache.settings?.display_name || 'Me', partner = cache.settings?.partner_label || 'Partner';
-  const v = k => row?.[k] ?? '';
+  const v = k => row?.[k] ?? scan?.fields?.[k] ?? '';
   const num = (k, lbl, hint = '') => `<label>${lbl}${hint ? ` <span class="hint">${hint}</span>` : ''}<input type="number" step="0.01" min="0" name="${k}" value="${esc(v(k))}"></label>`;
   return new Promise(resolve => {
     const dlg = document.createElement('dialog');
-    dlg.innerHTML = `<form method="dialog"><h2>${row ? 'Edit' : 'Add'} payslip</h2>
+    dlg.innerHTML = `<form method="dialog"><h2>${row ? 'Edit' : scan ? 'Check scanned payslip' : 'Add'} payslip</h2>
+      ${scan ? `<p class="callout ${scan.found.size ? 'good' : 'bad'}">${scan.found.size ? `Read <b>${scan.found.size}</b> value${scan.found.size === 1 ? '' : 's'} from <b>${esc(scan.file)}</b> — they're outlined in green. <b>Check every number against the payslip</b>, fill any blanks, then Save.` : ''}${scan.notes.map(n => `<br>• ${esc(n)}`).join('')}</p>` : ''}
       <div class="formgrid">
         <label>Whose payslip <select name="person"><option value="me">${esc(me)}</option><option value="partner">${esc(partner)}</option></select></label>
         <label>Employer <input name="employer" required value="${esc(v('employer'))}"></label>
@@ -1326,8 +1328,9 @@ function payslipForm(row = null) {
     document.body.appendChild(dlg);
     const f = $('form', dlg);
     f.person.value = row?.person || (personView === 'partner' ? 'partner' : 'me');
+    if (scan) for (const k of scan.found) if (f[k]) f[k].classList.add('scanned');
     const n = k => Number(f[k].value || 0);
-    let grossTouched = !!row;
+    let grossTouched = !!row || (scan?.found?.has('gross_pay'));
     const parts = ['ordinary_pay', 'overtime_pay', 'allowances', 'bonus', 'leave_pay'];
     const check = () => {
       const partSum = parts.reduce((t, k) => t + n(k), 0);
@@ -1365,6 +1368,56 @@ function payslipForm(row = null) {
   });
 }
 
+// Read a payslip file: PDF text directly; photos and scanned PDFs through text recognition (runs in the browser)
+let tesseractReady = null;
+function loadTesseract() {
+  if (!tesseractReady) tesseractReady = new Promise((res, rej) => {
+    const sc = document.createElement('script'); sc.src = 'https://cdn.jsdelivr.net/npm/tesseract.js@5/dist/tesseract.min.js';
+    sc.onload = () => res(window.Tesseract); sc.onerror = () => rej(new Error('Could not load the text reader — check your internet connection.'));
+    document.head.appendChild(sc);
+  });
+  return tesseractReady;
+}
+async function ocr(image, progress) {
+  const T = await loadTesseract();
+  const worker = await T.createWorker('eng', 1, { logger: m => m.status === 'recognizing text' && progress(Math.round(m.progress * 100)) });
+  try {
+    await worker.setParameters({ tessedit_pageseg_mode: '6' });  // read row by row so labels stay with their amounts
+    const { data } = await worker.recognize(image);
+    return toLines(data.text);
+  } finally { await worker.terminate(); }
+}
+async function scanPayslipFile(file, progress) {
+  if (/\.pdf$/i.test(file.name) || file.type === 'application/pdf') {
+    const pages = await readPdfItems(file);
+    let lines = linesFromItems(pages).map(l => l.text);
+    if (lines.join('').replace(/\s/g, '').length > 40) return lines;
+    // no text layer (a scanned PDF): render page 1 and read it
+    progress(0, 'Scanned PDF — reading the image…');
+    const pdf = await pdfjsLib.getDocument({ data: await file.arrayBuffer() }).promise;
+    const page = await pdf.getPage(1); const vp = page.getViewport({ scale: 2.5 });
+    const canvas = document.createElement('canvas'); canvas.width = vp.width; canvas.height = vp.height;
+    await page.render({ canvasContext: canvas.getContext('2d'), viewport: vp }).promise;
+    return ocr(canvas, progress);
+  }
+  if (/^image\//.test(file.type) || /\.(jpe?g|png|heic|webp)$/i.test(file.name)) return ocr(file, progress);
+  throw new Error('Choose a PDF or a photo of the payslip.');
+}
+async function scanPayslip(after) {
+  const inp = document.createElement('input'); inp.type = 'file'; inp.accept = 'application/pdf,.pdf,image/*';
+  inp.onchange = async () => {
+    const file = inp.files[0]; if (!file) return;
+    toast('Reading payslip…', 60000);
+    try {
+      const lines = await scanPayslipFile(file, (p, msg) => toast(msg || `Reading payslip… ${p}%`, 60000));
+      const r = readPayslip(lines);
+      toast('Done — check the numbers', 2500);
+      if (await payslipForm(null, { ...r, file: file.name })) after();
+    } catch (e) { toast(e.message || 'Could not read that file', 6000); }
+  };
+  inp.click();
+}
+
 async function payView() {
   view.innerHTML = '<p class="loading">Loading…</p>';
   const all = await q(sb.from('payslips').select('*').order('pay_date', { ascending: false }));
@@ -1386,8 +1439,9 @@ async function payView() {
           <li><b>Leave balances</b> and year-to-date totals from your latest payslip</li>
           <li>A <b>download</b> for tax time</li></ul>
         <p class="hint">Tip: once pay is regular, use <b>Set up as regular income</b> so it shows in Income and the Budget.</p>
-        <button class="primary" id="ps-add">+ Add a payslip</button></section>`;
+        <div class="row"><button class="primary" id="ps-scan">Scan payslip (PDF or photo)</button><button id="ps-add">Type it in</button></div></section>`;
     $('#ps-add').onclick = async () => { if (await payslipForm()) payView(); };
+    $('#ps-scan').onclick = () => scanPayslip(payView);
     return;
   }
 
@@ -1399,7 +1453,7 @@ async function payView() {
 
   view.innerHTML = `<div class="page-head"><div><h1 class="page-title">Payslips</h1><div class="who-now inline">${esc(label)}</div></div>
       <div class="row"><select id="ps-fy" style="width:auto;margin:0" aria-label="Financial year">${fys.map(f => `<option value="${f}" ${f === payFy ? 'selected' : ''}>FY ${f.slice(0, 4)}–${f.slice(5)}</option>`).join('')}</select>
-        <button class="primary" id="ps-add">+ Add payslip</button></div></div>
+        <button class="primary" id="ps-scan">Scan payslip</button><button id="ps-add">+ Type one in</button></div></div>
     <div class="tiles">
       <div class="tile"><div class="tile-label">Gross pay</div><div class="tile-value">${moneyRound(gross)}</div><div class="tile-sub">${rows.length} payslip${rows.length === 1 ? '' : 's'} this year</div></div>
       <div class="tile"><div class="tile-label">Tax withheld</div><div class="tile-value">${moneyRound(tax)}</div><div class="tile-sub">${gross ? (tax / gross * 100).toFixed(1) : 0}% of gross</div></div>
@@ -1439,6 +1493,7 @@ async function payView() {
 
   $('#ps-fy').onchange = e => { payFy = e.target.value; payView(); };
   $('#ps-add').onclick = async () => { if (await payslipForm()) payView(); };
+  $('#ps-scan').onclick = () => scanPayslip(payView);
   view.querySelectorAll('.ps-edit').forEach(b => b.onclick = async () => { if (await payslipForm(rows[b.dataset.i])) payView(); });
   view.querySelectorAll('.ps-del').forEach(b => b.onclick = async () => {
     if (!confirm('Delete this payslip? This cannot be undone.')) return;

@@ -1,0 +1,20 @@
+// Payslip reader tests: two text layouts and one OCR'd photo (made-up payslips)
+import fs from 'node:fs';
+import assert from 'node:assert/strict';
+import { readPayslip, toLines } from '../app/payslip.js';
+const read = f => readPayslip(toLines(fs.readFileSync(new URL(`./payslips/${f}`, import.meta.url), 'utf8'))).fields;
+const hero = read('hero.txt');
+assert.equal(hero.employer, 'Harvey Mowing Co Pty Ltd'); assert.equal(hero.pay_date, '2026-11-19');
+assert.equal(hero.period_start, '2026-11-03'); assert.equal(hero.period_end, '2026-11-16');
+assert.equal(hero.gross_pay, 2614.56); assert.equal(hero.tax_withheld, 412); assert.equal(hero.net_pay, 2202.56);
+assert.equal(hero.super_employer, 288.01); assert.equal(hero.ordinary_pay, 2400.08); assert.equal(hero.overtime_pay, 189.48);
+assert.equal(hero.allowances, 25); assert.equal(hero.hours, 76); assert.equal(hero.ytd_gross, 10079.28); assert.equal(hero.annual_leave_hours, 45.6);
+const xero = read('xero.txt');
+assert.equal(xero.employer, 'South West Logistics Pty Ltd'); assert.equal(xero.pay_date, '2026-11-21');
+assert.equal(xero.gross_pay, 1368); assert.equal(xero.tax_withheld, 184); assert.equal(xero.net_pay, 1169);
+assert.equal(xero.leave_pay, 228); assert.equal(xero.ordinary_pay, 1140); assert.equal(xero.other_deductions, 15); assert.equal(xero.hours, 38);
+const photo = read('hero_photo_ocr.txt');
+assert.equal(photo.gross_pay, 2614.56); assert.equal(photo.net_pay, 2202.56); assert.equal(photo.tax_withheld, 412); assert.equal(photo.super_employer, 288.01);
+const sal = readPayslip(toLines(`Acme Services Pty Ltd\nPay date: 30/11/2026\nSalary $5,000.00\nTax $1,050.00\nSalary Sacrifice Super $200.00\nNet Pay $3,750.00\nEmployer Superannuation $624.00`)).fields;
+assert.equal(sal.employer, 'Acme Services Pty Ltd'); assert.equal(sal.salary_sacrifice, 200); assert.equal(sal.super_employer, 624); assert.equal(sal.gross_pay, 5000);
+console.log('All payslip tests passed');
