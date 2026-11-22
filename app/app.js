@@ -1,7 +1,7 @@
 import { createClient } from 'https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2/+esm';
-import { SUPABASE_URL, SUPABASE_PUBLISHABLE_KEY } from './config.js?v=202611230005';
-import { parseBankCsv, parseWestpacActivity, splitAccounts } from './csv.js?v=202611230005';
-import { columnChart, hbarChart, SERIES, moneyRound, moneyCompact } from './charts.js?v=202611230005';
+import { SUPABASE_URL, SUPABASE_PUBLISHABLE_KEY } from './config.js?v=202611230021';
+import { parseBankCsv, parseWestpacActivity, splitAccounts } from './csv.js?v=202611230021';
+import { columnChart, hbarChart, SERIES, moneyRound, moneyCompact } from './charts.js?v=202611230021';
 
 const sb = createClient(SUPABASE_URL, SUPABASE_PUBLISHABLE_KEY);
 const $ = (s, el = document) => el.querySelector(s);
@@ -195,6 +195,18 @@ function cell(def, row, k) {
   return esc(label(v));
 }
 
+TABLES.tax_extras = { title: 'Other costs or income', addTitle: 'cost or income', order: ['entry_date'],
+  fields: [
+    { k: 'kind', label: 'Type', type: 'select', options: ['expense', 'income'] },
+    { k: 'description', label: 'What for', type: 'text', required: true, hint: 'e.g. toilet paper & cleaning supplies (cash), plumber' },
+    { k: 'amount', label: 'Amount', type: 'number', required: true },
+    { k: 'entry_date', label: 'Date', type: 'date', default: today },
+    { k: 'apportion', label: 'Shared household cost (apportioned)', type: 'checkbox', default: true },
+  ],
+  columns: ['entry_date', 'kind', 'description', 'amount', 'apportion'],
+  footer: rows => ({ amount: money(sum(rows.filter(r => r.kind === 'expense'), r => r.amount)) + '<div class="hint">costs</div>' }),
+};
+
 // Two views of the same bills/income table, with friendlier columns
 const FREQ_WORD = { once: 'once', weekly: 'week', fortnightly: 'fortnight', monthly: 'month', quarterly: 'quarter', yearly: 'year' };
 TABLES.bills = { ...TABLES.recurring_items, table: 'recurring_items', title: 'Your bills', order: ['next_due'], addTitle: 'bill',
@@ -224,7 +236,7 @@ if (!['all', 'me', 'partner'].includes(personView)) personView = 'all';
 const personNames = () => ({ all: 'Household', me: cache.settings?.display_name || 'Me', partner: cache.settings?.partner_label || 'Partner' });
 const personName = () => personNames()[personView];
 // Pages that change with the person switch; others show household figures and say so
-const PERSON_PAGES = ['dashboard', 'budget', 'bills', 'income', 'debts'];
+const PERSON_PAGES = ['dashboard', 'budget', 'bills', 'income', 'debts', 'tax'];
 function renderWhoSwitch() {
   const box = $('#whoswitch'); if (!box) return;
   box.innerHTML = `<span class="who-label">Showing</span>` + Object.entries(personNames()).map(([k, v]) =>
@@ -1059,6 +1071,221 @@ async function debts() {
   await Promise.all([top(), list()]);
 }
 
+// ---------- TAX (board income & claimable costs, per person) ----------
+const fyOf = d => { const y = +d.slice(0, 4), m = +d.slice(5, 7); const s = m >= 7 ? y : y - 1; return `${s}-${String((s + 1) % 100).padStart(2, '0')}`; };
+const fyRange = fy => { const s = +fy.slice(0, 4); return [`${s}-07-01`, `${s + 1}-06-30`]; };
+const dayDiff = (a, b) => Math.round((new Date(b + 'T00:00:00') - new Date(a + 'T00:00:00')) / 864e5) + 1;
+let taxFy = null;
+let taxWho = null;
+async function taxView() {
+  view.innerHTML = '<p class="loading">Loading…</p>';
+  // Tax is personal: follow the top-bar switch when it names a person; 'Household' keeps the last person shown here
+  taxWho = personView === 'all' ? (taxWho || 'me') : personView;
+  const meName = cache.settings?.display_name || 'Me', partnerName = cache.settings?.partner_label || 'Partner';
+  const oldest = (await q(sb.from('transactions').select('txn_date').order('txn_date').limit(1)))[0]?.txn_date || today();
+  const fys = []; for (let f = fyOf(today()); f >= fyOf(oldest); f = `${+f.slice(0, 4) - 1}-${String(+f.slice(0, 4) % 100).padStart(2, '0')}`) fys.push(f);
+  if (!taxFy || !fys.includes(taxFy)) taxFy = fys[0];
+  const [fyStart, fyEnd] = fyRange(taxFy);
+  const periodEnd = today() < fyEnd ? today() : fyEnd;
+
+  // data for the year
+  let txns = [];
+  for (let from = 0; ; from += 1000) {
+    const page = await q(sb.from('transactions').select('id, txn_date, amount, description, category_id, account_id').gte('txn_date', fyStart).lte('txn_date', fyEnd).order('txn_date').range(from, from + 999));
+    txns = txns.concat(page); if (page.length < 1000) break;
+  }
+  const [saved, extras, boardItems] = await Promise.all([
+    q(sb.from('tax_years').select('*').eq('fy', taxFy).maybeSingle()),
+    q(sb.from('tax_extras').select('*').eq('fy', taxFy).order('entry_date')),
+    q(sb.from('recurring_items').select('*').eq('direction', 'in')),
+  ]);
+  const catBy = new Map(cache.categories.map(c => [c.id, c]));
+  const boardCat = cache.categories.find(c => /board|rent received/i.test(c.name) && c.kind === 'income');
+  const interestCat = cache.categories.find(c => /^loan interest/i.test(c.name));
+  const loans = cache.accounts.filter(a => ['mortgage', 'loan'].includes(a.account_type));
+  const boardTx = txns.filter(t => boardCat && t.category_id === boardCat.id && t.amount > 0);
+  const boardItem = boardItems.filter(i => boardCat && i.category_id === boardCat.id && i.is_active);
+
+  const defaults = {
+    my_share_pct: boardItem.length ? Number(boardItem[0].my_share_pct) : 50,
+    floor_pct: null, area_private: null, area_shared: null, area_total: null,
+    rented_from: boardTx[0]?.txn_date || null, rented_to: null,
+    included_categories: cache.categories.filter(c => ['Rates', 'Water', 'Power', 'Phone & internet'].includes(c.name)).map(c => c.id),
+    included_loan_accounts: loans.filter(a => a.account_type === 'mortgage').map(a => a.id),
+    notes: '',
+  };
+  const st = { ...defaults, ...(saved || {}) };
+
+  const draw = () => {
+    const share = taxWho === 'me' ? st.my_share_pct / 100 : 1 - st.my_share_pct / 100;
+    const who = taxWho === 'me' ? meName : partnerName;
+    const rFrom = st.rented_from && st.rented_from > fyStart ? st.rented_from : fyStart;
+    const rTo = st.rented_to && st.rented_to < periodEnd ? st.rented_to : periodEnd;
+    const periodDays = dayDiff(fyStart, periodEnd);
+    const rentedDays = st.rented_from ? Math.max(0, dayDiff(rFrom, rTo)) : 0;
+    const timePct = periodDays ? rentedDays / periodDays : 0;
+    const floor = st.floor_pct == null ? null : Number(st.floor_pct) / 100;
+    const factor = floor == null ? 0 : floor * timePct;
+
+    // expenses by category (money out), interest from the chosen loans
+    const byCat = new Map();
+    for (const t of txns) {
+      if (t.amount >= 0) continue;
+      const c = catBy.get(t.category_id);
+      if (!c) continue;
+      if (interestCat && c.id === interestCat.id && !st.included_loan_accounts.includes(t.account_id)) continue;
+      if (c.kind === 'transfer' && !(interestCat && c.id === interestCat.id)) continue;
+      byCat.set(c.id, (byCat.get(c.id) || 0) - t.amount);
+    }
+    const candidates = [...byCat.entries()].map(([id, total]) => ({ id, total, c: catBy.get(id) }))
+      .filter(x => x.c.kind !== 'income').sort((a, b) => b.total - a.total);
+    const incl = id => st.included_categories.includes(id) || (interestCat && id === interestCat.id && st.included_loan_accounts.length);
+    const boardTotal = sum(boardTx, t => t.amount) + sum(extras.filter(e => e.kind === 'income'), e => e.amount);
+    const catClaim = sum(candidates.filter(x => incl(x.id)), x => x.total * factor);
+    const extraClaim = sum(extras.filter(e => e.kind === 'expense'), e => e.amount * (e.apportion ? factor : 1));
+    const claimHouse = catClaim + extraClaim;
+    const incomeMine = boardTotal * share, claimMine = claimHouse * share;
+    const net = incomeMine - claimMine;
+
+    // Centrelink estimate (per year, then fortnight): 70% of board (lodging only) minus mortgage interest
+    const boardYear = sum(boardItem, i => i.amount * PER_MONTH[i.frequency] * 12);
+    const months = new Map();
+    for (const t of boardTx) { const m = t.txn_date.slice(0, 7); months.set(m, (months.get(m) || 0) + t.amount); }
+
+    view.innerHTML = `
+      <div class="page-head"><div><h1 class="page-title">Tax time</h1>
+        <p class="hint">Board income and the claimable share of house costs for a financial year. A guide for your tax return — check it with the ATO's free Tax Help program or a tax agent.</p></div>
+        <div class="row">
+          <div class="seg big" role="tablist">${[['me', meName], ['partner', partnerName]].map(([k, v]) => `<button class="${taxWho === k ? 'on' : ''}" data-taxwho="${k}" role="tab" aria-selected="${taxWho === k}">${esc(v)}</button>`).join('')}</div>
+          <select id="tax-fy" aria-label="Financial year" style="width:auto;margin:0">${fys.map(f => `<option ${f === taxFy ? 'selected' : ''} value="${f}">FY ${f.slice(0, 4)}–${f.slice(5)}${f === fyOf(today()) ? ' (so far)' : ''}</option>`).join('')}</select>
+        </div></div>
+
+      ${floor == null ? `<div class="alert warning"><span class="alert-icon">•</span><div><b>Set the share of the home the boarders use</b><div class="hint">Fill in "Home used by boarders" below — claimable costs can't be worked out without it.</div></div><span></span></div><br>` : ''}
+
+      <div class="tiles">
+        <div class="tile"><div class="tile-label">Board received — ${esc(who)}</div><div class="tile-value">${moneyRound(incomeMine)}</div><div class="tile-sub">${Math.round(share * 100)}% of ${moneyRound(boardTotal)} · ${boardTx.length} payment${boardTx.length === 1 ? '' : 's'}</div></div>
+        <div class="tile"><div class="tile-label">Claimable costs — ${esc(who)}</div><div class="tile-value">${moneyRound(claimMine)}</div><div class="tile-sub">${floor == null ? 'needs the floor-area %' : `${Math.round(factor * 1000) / 10}% of included costs`}</div></div>
+        <div class="tile ${net < 0 ? 'good' : ''}"><div class="tile-label">Net rental ${net < 0 ? 'loss' : 'income'}</div><div class="tile-value">${moneyRound(net)}</div><div class="tile-sub">what goes on the return (estimate)</div></div>
+      </div>
+
+      <div class="grid2">
+        <section class="card"><div class="sec-head"><div><h2>Home used by boarders</h2><p class="hint">ATO floor-area method: (boarders' own rooms + half the shared areas) ÷ whole home</p></div></div>
+          <div class="formgrid">
+            <label>Boarders' own rooms (m²) <input type="number" step="0.1" id="t-ap" value="${esc(st.area_private ?? '')}"></label>
+            <label>Shared areas (m²) <span class="hint">kitchen, lounge, bathroom…</span><input type="number" step="0.1" id="t-as" value="${esc(st.area_shared ?? '')}"></label>
+            <label>Whole home (m²) <input type="number" step="0.1" id="t-at" value="${esc(st.area_total ?? '')}"></label>
+            <label>Share of home used <span class="hint">% — worked out, or type your own</span><input type="number" step="0.01" min="0" max="100" id="t-floor" value="${esc(st.floor_pct ?? '')}"></label>
+          </div>
+          <div class="formgrid">
+            <label>Boarders there from <input type="date" id="t-from" value="${esc(st.rented_from ?? '')}"></label>
+            <label>Until <span class="hint">blank = still there</span><input type="date" id="t-to" value="${esc(st.rented_to ?? '')}"></label>
+            <label>${esc(meName)}'s share of the house & board % <input type="number" step="1" min="0" max="100" id="t-share" value="${esc(st.my_share_pct)}"></label>
+          </div>
+          <p class="hint">Time: ${rentedDays} of ${periodDays} days${taxFy === fyOf(today()) ? ' so far this year' : ''} (${Math.round(timePct * 100)}%). Claimable share = ${floor == null ? '?' : Math.round(floor * 1000) / 10 + '%'} of the home × ${Math.round(timePct * 100)}% of the time${floor == null ? '' : ` = <b>${Math.round(factor * 1000) / 10}%</b> of each included cost`}.</p>
+          <div class="row"><button class="primary" id="t-save">Save</button><span class="hint" id="t-saved"></span></div>
+        </section>
+
+        <section class="card"><div class="sec-head"><div><h2>Board received by month</h2><p class="hint">Household · ${esc(who)}'s share is ${Math.round(share * 100)}%</p></div></div>
+          <div id="t-months"></div></section>
+      </div>
+
+      <section class="card"><div class="sec-head"><div><h2>House costs this year</h2>
+          <p class="hint">Tick the costs that are for the home. Only home-related costs count — not car insurance, food for yourselves, or personal items. Interest counts only on loans used to buy the home.</p></div></div>
+        <div class="tablewrap"><table class="list"><thead><tr><th>Count?</th><th>Cost</th><th class="num">Paid this year</th><th class="num">Claimable (household)</th><th class="num">${esc(who)}</th></tr></thead><tbody>
+          ${candidates.map(x => `<tr><td><input type="checkbox" class="t-cat" data-id="${x.id}" ${incl(x.id) ? 'checked' : ''} aria-label="Count ${esc(x.c.name)}"></td>
+            <td>${esc(x.c.name.replace(' (not counted)', ''))}${interestCat && x.id === interestCat.id ? `<div class="hint">${loans.map(a => `<label class="mcheck" style="display:inline-block;margin-right:.8rem"><input type="checkbox" class="t-loan" data-id="${a.id}" ${st.included_loan_accounts.includes(a.id) ? 'checked' : ''}> ${esc(a.name)}</label>`).join('')}</div>` : ''}
+              ${/insurance/i.test(x.c.name) ? '<div class="hint">only home &amp; contents / building insurance counts</div>' : ''}</td>
+            <td class="num">${money(x.total)}</td><td class="num">${incl(x.id) ? money(x.total * factor) : '<span class="hint">—</span>'}</td><td class="num">${incl(x.id) ? money(x.total * factor * share) : '<span class="hint">—</span>'}</td></tr>`).join('')}
+        </tbody><tfoot><tr class="total"><td></td><td><b>Total from bank data</b></td><td></td><td class="num"><b>${money(catClaim)}</b></td><td class="num"><b>${money(catClaim * share)}</b></td></tr></tfoot></table></div>
+      </section>
+
+      <section class="card" id="t-extras"></section>
+
+      <section class="card"><div class="sec-head"><div><h2>Centrelink check</h2><p class="hint">How much of the board Centrelink counts (lodging only, no meals)</p></div></div>
+        <div id="t-cl"></div></section>
+
+      <div class="row"><button id="t-csv">Download for tax agent (CSV)</button><button id="t-print">Print</button></div>
+      <p class="hint">This is a guide, not tax advice. Keep receipts and bank statements. Renting part of your main residence can reduce the capital gains tax exemption when you sell.</p>`;
+
+    // board by month chart
+    const ms = [...months.keys()].sort();
+    if (ms.length) columnChart($('#t-months'), { title: 'Board received by month', labels: ms.map(m => new Date(m + '-01T00:00:00').toLocaleDateString('en-AU', { month: 'short' })),
+      tipLabels: ms.map(m => new Date(m + '-01T00:00:00').toLocaleDateString('en-AU', { month: 'long', year: 'numeric' })),
+      series: [{ name: 'Board received', color: SERIES.blue, values: ms.map(m => months.get(m)) }], height: 190 });
+    else $('#t-months').innerHTML = '<p class="empty">No board recorded in this year.</p>';
+
+    // Centrelink: annual board (current rate) × share × 70% − share of annual mortgage interest
+    (async () => {
+      const cut = new Date(Date.now() - 365 * 864e5).toLocaleDateString('en-CA');
+      const ints = interestCat && st.included_loan_accounts.length ? await q(sb.from('transactions').select('amount').eq('category_id', interestCat.id).in('account_id', st.included_loan_accounts).gte('txn_date', cut)) : [];
+      const interestYear = -sum(ints, t => t.amount);
+      const counted = boardYear * share * 0.7, deduction = interestYear * share, assessed = Math.max(0, counted - deduction);
+      $('#t-cl').innerHTML = `<div class="tablewrap"><table class="list"><tbody>
+        <tr><td>Board at the current rate, ${esc(who)}'s ${Math.round(share * 100)}%</td><td class="num">${money(boardYear * share)} / year</td></tr>
+        <tr><td>70% counted (lodging only — utilities and supplies don't change this)</td><td class="num">${money(counted)}</td></tr>
+        <tr><td>Less ${esc(who)}'s share of mortgage interest (last 12 months)</td><td class="num">−${money(deduction)}</td></tr>
+        </tbody><tfoot><tr class="total"><td><b>Income Centrelink would count</b></td><td class="num"><b>${money(assessed)} / year</b><br><span class="hint">${money(assessed / 26)} a fortnight</span></td></tr></tfoot></table></div>
+        <p class="callout ${assessed > 0 ? 'bad' : 'good'}">${assessed > 0 ? `About <b>${money(assessed / 26)}</b> a fortnight would be counted in the income test.` : `Likely <b>nothing</b> counted — the mortgage interest is more than the counted board. It still needs to be reported.`}
+          Report it in myGov → Centrelink → Manage Income and Assets → Other Income.</p>`;
+    })();
+
+    // extras list
+    renderCrudExtras();
+
+    // events
+    view.querySelectorAll('[data-taxwho]').forEach(b => b.onclick = () => { taxWho = personView = b.dataset.taxwho; try { localStorage.setItem('personView', personView); } catch {} renderWhoSwitch(); draw(); });
+    $('#tax-fy').onchange = e => { taxFy = e.target.value; taxView(); };
+    const areaCalc = () => {
+      const A = Number($('#t-ap').value), B = Number($('#t-as').value), C = Number($('#t-at').value);
+      if (A >= 0 && C > 0 && $('#t-ap').value !== '' && $('#t-at').value !== '') $('#t-floor').value = (Math.round(((A + (B || 0) / 2) / C) * 10000) / 100).toFixed(2);
+    };
+    ['#t-ap', '#t-as', '#t-at'].forEach(s => $(s).oninput = areaCalc);
+    view.querySelectorAll('.t-cat').forEach(c => c.onchange = () => {
+      const id = c.dataset.id;
+      if (interestCat && id === interestCat.id) st.included_loan_accounts = c.checked ? loans.filter(a => a.account_type === 'mortgage').map(a => a.id) : [];
+      else st.included_categories = c.checked ? [...new Set([...st.included_categories, id])] : st.included_categories.filter(x => x !== id);
+      save(true);
+    });
+    view.querySelectorAll('.t-loan').forEach(c => c.onchange = () => {
+      st.included_loan_accounts = c.checked ? [...new Set([...st.included_loan_accounts, c.dataset.id])] : st.included_loan_accounts.filter(x => x !== c.dataset.id);
+      save(true);
+    });
+    $('#t-save').onclick = () => {
+      const num = s => $(s).value === '' ? null : Number($(s).value);
+      Object.assign(st, { area_private: num('#t-ap'), area_shared: num('#t-as'), area_total: num('#t-at'), floor_pct: num('#t-floor'),
+        rented_from: $('#t-from').value || null, rented_to: $('#t-to').value || null, my_share_pct: num('#t-share') ?? 50 });
+      save(false);
+    };
+    $('#t-print').onclick = () => window.print();
+    $('#t-csv').onclick = () => {
+      const rows = [['Household Finances — tax summary'], ['Financial year', `${taxFy.slice(0, 4)}-${taxFy.slice(5)}`], ['Person', who], ['Share of house & board %', Math.round(share * 100)],
+        ['Share of home used by boarders %', st.floor_pct ?? ''], ['Days boarders there', `${rentedDays} of ${periodDays}`], ['Claimable factor %', Math.round(factor * 10000) / 100], [],
+        ['Board received (household)', boardTotal.toFixed(2)], [`Board received (${who})`, incomeMine.toFixed(2)], [],
+        ['Cost', 'Paid this year (household)', 'Counted?', 'Claimable (household)', `Claimable (${who})`],
+        ...candidates.map(x => [x.c.name.replace(' (not counted)', ''), x.total.toFixed(2), incl(x.id) ? 'yes' : 'no', incl(x.id) ? (x.total * factor).toFixed(2) : '0.00', incl(x.id) ? (x.total * factor * share).toFixed(2) : '0.00']),
+        ...extras.map(e => [`${e.kind === 'income' ? 'Extra income' : 'Extra cost'}: ${e.description}`, Number(e.amount).toFixed(2), 'yes', e.kind === 'income' ? '' : (e.amount * (e.apportion ? factor : 1)).toFixed(2), e.kind === 'income' ? '' : (e.amount * (e.apportion ? factor : 1) * share).toFixed(2)]),
+        [], [`Total claimable (${who})`, '', '', '', claimMine.toFixed(2)], [`Net rental income/loss (${who})`, '', '', '', net.toFixed(2)], [],
+        ['Board payments'], ['Date', 'Description', 'Amount (household)'], ...boardTx.map(t => [t.txn_date, t.description, Number(t.amount).toFixed(2)])];
+      const csv = rows.map(r => r.map(v => `"${String(v ?? '').replace(/"/g, '""')}"`).join(',')).join('\r\n');
+      const a = document.createElement('a'); a.href = URL.createObjectURL(new Blob([csv], { type: 'text/csv' }));
+      a.download = `tax-summary-${taxFy}-${who.toLowerCase().replace(/\W+/g, '-')}.csv`; a.click(); URL.revokeObjectURL(a.href);
+    };
+  };
+
+  async function save(quiet) {
+    await q(sb.from('tax_years').upsert({ fy: taxFy, floor_pct: st.floor_pct, area_private: st.area_private, area_shared: st.area_shared, area_total: st.area_total,
+      rented_from: st.rented_from, rented_to: st.rented_to, my_share_pct: st.my_share_pct, included_categories: st.included_categories,
+      included_loan_accounts: st.included_loan_accounts, notes: st.notes || null }, { onConflict: 'owner_id,fy' }));
+    toast(quiet ? 'Updated' : 'Saved'); draw();
+  }
+  async function renderCrudExtras() {
+    await renderCrud($('#t-extras'), 'tax_extras', { filter: { fy: taxFy }, title: 'Other costs or income',
+      subtitle: 'Things not in your bank data — e.g. household supplies paid in cash, a repair, or a cleaner. Tick "shared household cost" for things everyone uses; untick for costs only for the boarders (claimed in full).',
+      onChange: async () => { const e = await q(sb.from('tax_extras').select('*').eq('fy', taxFy).order('entry_date')); extras.length = 0; extras.push(...e); draw(); } });
+  }
+  draw();
+}
+
 // ---------- SHARED ----------
 async function shared() {
   view.innerHTML = `<div class="page-head"><div><h1 class="page-title">Shared costs</h1><p class="hint">Who paid what, and who owes whom.</p></div></div><div class="grid" id="s-bal"></div><div class="card" id="s-list"></div>`;
@@ -1097,7 +1324,7 @@ async function setup() {
 }
 
 // ---------- navigation & auth ----------
-const VIEWS = { dashboard, budget, bills, income, debts, transactions, sort: sortView, import: importView, shared, setup };
+const VIEWS = { dashboard, budget, bills, income, debts, transactions, sort: sortView, import: importView, shared, tax: taxView, setup };
 async function updateSortBadge() {
   const { count } = await sb.from('transactions').select('id', { count: 'exact', head: true }).is('category_id', null);
   const b = $('#sort-badge'); if (b) { b.textContent = count || ''; b.classList.toggle('hidden', !count); }

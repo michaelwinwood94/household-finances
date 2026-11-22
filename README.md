@@ -20,6 +20,7 @@ debt register with creditor contact log, shared costs with ex-partner, and a das
 | **Debts** | Who you owe (chart), repayments, overdue amounts, hardship status, and a call log per creditor |
 | **Transactions** | Every transaction; filter by months (tick several), account, category, search; totals follow the filter; one-off flag |
 | **To sort** | Uncategorised transactions grouped by payee; **One-off** or **Make rule**; **+ New category…** from any category list |
+| Tax | Per person (Michael or Taslyn) and financial year: board received, claimable share of house costs (ATO floor-area × time method), net rental income, Centrelink board-income estimate, CSV for a tax agent, print |
 | Import · Shared · Setup | Statement import (CSV/PDF, multi-account), shared-cost ledger, settings/accounts/categories/rules |
 
 ## First-time setup (about 15 minutes)

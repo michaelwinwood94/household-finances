@@ -203,3 +203,8 @@ dialog::backdrop { background: rgba(20, 28, 26, .45); }
   .due-list li > :last-child:not(.due-amt) { grid-column: 2 / 4; justify-self: start; }
   .tabs { justify-content: flex-start; }
 }
+
+@media print {
+  .topbar, .tabs, .toast, #t-save, #t-csv, #t-print, button.add, td.actions, .seg button:not(.on) { display: none !important; }
+  body { background: #fff; font-size: 12pt; } .card, .tile { box-shadow: none; break-inside: avoid; } main { padding: 0; max-width: none; }
+}
