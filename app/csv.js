@@ -87,7 +87,8 @@ export function parseBankCsv(text) {
     const credit = findCol(h, ['creditamount', 'credit', 'deposit', 'deposits', 'moneyin']);
     const balance = findCol(h, ['balance', 'runningbalance']);
     const isWestpac = h.map(norm).includes('narrative') && h.map(norm).includes('bankaccount');
-    format = isWestpac ? 'westpac' : 'generic';
+    const hn = h.map(norm).join('|');
+    format = isWestpac ? 'westpac' : hn === 'transactiondate|description|amount|balance' ? 'commbank' : 'generic';
     // Separate Debit/Credit columns win over a single Amount column (fuzzy "amount" would match "Debit Amount")
     map = { date, desc, amount: (debit >= 0 && credit >= 0) ? -1 : amount, debit, credit, balance };
     if (date < 0 || desc < 0 || (map.amount < 0 && debit < 0 && credit < 0)) {
@@ -125,4 +126,72 @@ export function parseBankCsv(text) {
     rows.push({ date, description: description || '(no description)', amount: Math.round(amount * 100) / 100, balance });
   });
   return { format, rows, skipped };
+}
+
+// ---------- Westpac "Account activity" PDF (from the Westpac app / online banking) ----------
+// Input: pages of text items [{str, x, y}] (pdf.js gives y from the bottom of the page).
+// Each transaction has its date and amount on one line; description lines can sit just above and below it.
+
+export function linesFromItems(pages) {
+  const out = [];
+  pages.forEach((items, p) => {
+    const sorted = items.filter(i => i.str && i.str.trim()).slice().sort((a, b) => b.y - a.y || a.x - b.x);
+    const lines = [];
+    for (const it of sorted) {
+      const ln = lines.find(l => Math.abs(l.y - it.y) <= 1.5);
+      if (ln) ln.items.push(it); else lines.push({ y: it.y, items: [it] });
+    }
+    for (const l of lines) {
+      l.items.sort((a, b) => a.x - b.x);
+      out.push({ page: p, y: l.y, x: l.items[0].x, text: l.items.map(i => i.str.trim()).join(' ').replace(/\s+/g, ' ').trim() });
+    }
+  });
+  return out;
+}
+
+const DATE_RE = /^(\d{1,2}) ([A-Z][a-z]{2}) (\d{4})\b\s*(.*)$/;
+const AMT_RE = /(-?)\$([\d,]+\.\d{2})\s*$/;
+
+export function parseWestpacActivity(pages) {
+  const lines = linesFromItems(pages);
+  const p0 = lines.filter(l => l.page === 0);
+  const hdrIdx = p0.findIndex(l => /^Date\b.*Description.*Debit.*Credit/.test(l.text));
+  if (hdrIdx < 0) return { format: 'unknown', rows: [], skipped: [], error: 'This PDF doesn’t look like a Westpac "Account activity" export.' };
+
+  // Account details from the header block
+  const meta = p0.slice(0, hdrIdx).map(l => l.text).filter(t => !/^(Account activity|Transactions)$/i.test(t));
+  const numIdx = meta.findIndex(t => /^\d{3}-\d{3}\s+\d{4,}$/.test(t));
+  const name = (numIdx > 0 ? meta.slice(0, numIdx) : meta.slice(0, 1)).join(' ').trim();
+  const last4 = numIdx >= 0 ? meta[numIdx].replace(/\D/g, '').slice(-4) : '';
+  const balLine = meta.find(t => /^-?\$[\d,]+\.\d{2}$/.test(t));
+  const balance = balLine ? parseMoney(balLine) : null;
+
+  const hdrY = p0[hdrIdx].y;
+  const body = lines.filter(l => !(l.page === 0 && l.y >= hdrY - 0.5))
+    .filter(l => !/^(Copyright|ABN)\b/.test(l.text));
+
+  const anchors = [], extras = [];
+  for (const l of body) {
+    const m = l.text.match(DATE_RE);
+    if (m && MONTHS[m[2].toLowerCase()]) {
+      let rest = m[4];
+      const a = rest.match(AMT_RE);
+      let amount = null;
+      if (a) { amount = Number(a[2].replace(/,/g, '')) * (a[1] === '-' ? -1 : 1); rest = rest.slice(0, a.index).trim(); }
+      anchors.push({ ...l, date: iso(+m[3], MONTHS[m[2].toLowerCase()], +m[1]), amount, own: rest, above: [], below: [] });
+    } else extras.push(l);
+  }
+  for (const e of extras) {
+    let best = null, bd = Infinity;
+    for (const a of anchors) { if (a.page !== e.page) continue; const d = Math.abs(a.y - e.y); if (d < bd) { bd = d; best = a; } }
+    if (best && bd < 12) (e.y > best.y ? best.above : best.below).push(e);
+  }
+  const rows = [], skipped = [];
+  anchors.forEach((a, i) => {
+    const desc = [...a.above.sort((x, y) => y.y - x.y), { text: a.own }, ...a.below.sort((x, y) => y.y - x.y)]
+      .map(x => x.text).filter(Boolean).join(' ').replace(/\s+/g, ' ').trim();
+    if (a.amount === null) return skipped.push({ line: i + 1, reason: 'amount not found', raw: desc });
+    rows.push({ date: a.date, description: desc || '(no description)', amount: Math.round(a.amount * 100) / 100, balance: null });
+  });
+  return { format: 'westpac-pdf', account: { name, last4, balance }, rows, skipped };
 }

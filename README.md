@@ -15,7 +15,7 @@ debt register with creditor contact log, shared costs with ex-partner, and a das
 |---|---|
 | Dashboard | Money in accounts, this month in/out, regular monthly gap, total debt and arrears, shared balance, next 3 weeks of bills/income, spending vs budget, creditor follow-ups due |
 | Transactions | Filter by month / account / search; change category; tick "shared"; **Make rule** to auto-categorise similar transactions forever |
-| Import | Upload Westpac or CommBank CSV → preview → import. Duplicates skipped automatically. Matches bills (marks paid, moves due date on). **Undo** any import |
+| Import | Choose several files at once: CommBank/Westpac **CSV** or the Westpac app's **Account activity PDF**. Accounts are matched by last 4 digits or created for you with the right starting balance. Duplicates skipped. Matches bills. **Undo** any import |
 | Bills & income | Recurring bills and income (weekly / fortnightly / monthly …), shared %, next 5 weeks cash view |
 | Debts | Every debt with arrears, minimums, priority (1 = housing/power), hardship status; **Log** button keeps a record of every creditor call |
 | Shared costs | Who paid what, your share %, settlements, running "who owes whom" |
@@ -48,9 +48,10 @@ Open the app → enter email + password → **Create account** → confirm email
 Starter categories and ~30 auto-categorising rules are added automatically.
 
 ### 5. Load your data (in this order)
-1. **Setup → Bank accounts:** add each Westpac and CommBank account. Set *Start date* to the
-   first day of the statement you'll import and *Balance at start date* to the balance on that day.
-2. **Import:** export each account as CSV from online banking and import it.
+1. **Import:** choose all your statement files at once (CommBank CSV, Westpac CSV or Account activity PDF).
+   New accounts are created automatically with the correct starting balance; rename them in Setup if you like.
+   Note: the Westpac app's PDF seems to stop at 100 transactions — for longer history export CSV from Westpac Online Banking.
+2. **Setup → Bank accounts:** check the account names and types (home loans are set as *mortgage*).
 3. **Transactions → Only uncategorised:** set categories; use **Make rule** for anything that repeats.
 4. **Bills & income:** add Centrelink, mortgage, Synergy, water, insurance, Afterpay, subscriptions.
    Put the text that appears on your statement in *Text on bank statement* so payments are matched.
@@ -64,6 +65,7 @@ Starter categories and ~30 auto-categorising rules are added automatically.
   shared-cost creation, all dashboard views — tested with sample data, then removed.
 - Security: a second test user could not see or write the first user's data. Supabase security advisor: no issues.
 - CSV parser: `node tests/csv.test.mjs` (Westpac, CommBank, generic, bad files).
+- Real statements (22 Nov 2026): CommBank CSV 2,580 rows, Westpac Choice PDF 86 rows, two Rocket Repay home-loan PDFs 100 rows each — all parsed with nothing skipped; PDF results checked against a second PDF reader.
 - Every screen rendered in a headless browser at desktop and phone size with no script errors.
 - **Not yet tested with your real bank exports** — if an import shows "not recognised", send Claude
   the first two lines of the CSV (with amounts changed if you like).

@@ -1,6 +1,6 @@
 import { createClient } from 'https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2/+esm';
 import { SUPABASE_URL, SUPABASE_PUBLISHABLE_KEY } from './config.js';
-import { parseBankCsv } from './csv.js';
+import { parseBankCsv, parseWestpacActivity } from './csv.js';
 
 const sb = createClient(SUPABASE_URL, SUPABASE_PUBLISHABLE_KEY);
 const $ = (s, el = document) => el.querySelector(s);
@@ -247,16 +247,21 @@ async function dashboard() {
     q(sb.from('v_category_spend_month').select('*').eq('month', monthStart).order('spent', { ascending: false })),
   ]);
   const { count: uncatCount } = await sb.from('transactions').select('id', { count: 'exact', head: true }).is('category_id', null);
-  const totalCash = bal.reduce((s, a) => s + Number(a.last_statement_balance ?? a.calculated_balance ?? 0), 0);
+  const isLoan = a => ['loan', 'mortgage', 'credit_card'].includes(a.account_type);
+  const accBal = a => Number(a.last_statement_balance ?? a.calculated_balance ?? 0);
+  const totalCash = bal.filter(a => !isLoan(a)).reduce((s, a) => s + accBal(a), 0);
+  const loans = bal.filter(isLoan);
+  const totalLoans = loans.reduce((s, a) => s + accBal(a), 0);
   const thisMonth = cash.find(c => c.month === monthStart) || {};
   const s = Number(shared?.balance || 0);
   const partner = cache.settings?.partner_label || 'Ex-partner';
   const gap = Number(commit?.monthly_in || 0) - Number(commit?.monthly_out || 0) - Number(debt?.my_monthly_minimums || 0);
 
   view.innerHTML = `
-    ${!cache.accounts.length ? `<div class="card"><h2>Welcome</h2><p>Start in <b>Setup</b>: add your bank accounts. Then go to <b>Import</b> and upload a CSV statement from Westpac or CommBank.</p></div>` : ''}
+    ${!cache.accounts.length ? `<div class="card"><h2>Welcome</h2><p>Start in <b>Setup</b>: add your bank accounts. Or go straight to <b>Import</b> and choose your CommBank CSV and Westpac PDF/CSV files — accounts are set up for you.</p></div>` : ''}
     <div class="grid">
-      <div class="stat"><div class="label">Money in accounts</div><div class="value">${money(totalCash)}</div><div class="sub">${bal.length} active account(s)</div></div>
+      <div class="stat"><div class="label">Money in accounts</div><div class="value">${money(totalCash)}</div><div class="sub">${bal.length - loans.length} everyday/savings account(s)</div></div>
+      ${loans.length ? `<div class="stat warn"><div class="label">Loan balances</div><div class="value">${money(Math.abs(totalLoans))}</div><div class="sub">${loans.map(a => esc(a.name)).join(' · ')}</div></div>` : ''}
       <div class="stat ${Number(thisMonth.net) < 0 ? 'bad' : 'good'}"><div class="label">This month so far</div><div class="value">${money(thisMonth.net || 0)}</div><div class="sub">In ${money(thisMonth.money_in || 0)} · Out ${money(thisMonth.money_out || 0)}</div></div>
       <div class="stat ${gap < 0 ? 'bad' : 'good'}"><div class="label">Regular monthly gap</div><div class="value">${money(gap)}</div><div class="sub">Regular income − bills − debt minimums</div></div>
       <div class="stat warn"><div class="label">My total debt</div><div class="value">${money(debt?.my_total_owed || 0)}</div><div class="sub">Arrears ${money(debt?.my_total_arrears || 0)} · ${debt?.active_debts || 0} debts · ${debt?.on_hardship || 0} on hardship</div></div>
@@ -363,40 +368,128 @@ function makeRule(txn, after) {
 }
 
 // ---------- IMPORT ----------
+let pdfjsLib = null;
+async function readPdfItems(file) {
+  if (!pdfjsLib) {
+    pdfjsLib = await import('https://cdn.jsdelivr.net/npm/pdfjs-dist@4/build/pdf.min.mjs');
+    pdfjsLib.GlobalWorkerOptions.workerSrc = 'https://cdn.jsdelivr.net/npm/pdfjs-dist@4/build/pdf.worker.min.mjs';
+  }
+  const pdf = await pdfjsLib.getDocument({ data: await file.arrayBuffer() }).promise;
+  const pages = [];
+  for (let i = 1; i <= pdf.numPages; i++) {
+    const tc = await (await pdf.getPage(i)).getTextContent();
+    pages.push(tc.items.filter(it => it.str && it.str.trim()).map(it => ({ str: it.str, x: it.transform[4], y: it.transform[5] })));
+  }
+  return pages;
+}
+
+function guessInstitution(parsed, filename) {
+  if (parsed.format.startsWith('westpac')) return 'Westpac';
+  if (parsed.format === 'commbank' || /commbank|cba/i.test(filename)) return 'CommBank';
+  return 'Other';
+}
+function guessType(name) {
+  if (/home loan|mortgage|repay/i.test(name)) return 'mortgage';
+  if (/loan/i.test(name)) return 'loan';
+  if (/credit card|mastercard|visa/i.test(name)) return 'credit_card';
+  if (/saver|savings|goal/i.test(name)) return 'savings';
+  return 'transaction';
+}
+// Balance on the day before the earliest transaction in the file
+function openingFor(parsed) {
+  const rows = parsed.rows; if (!rows.length) return { date: today(), balance: 0 };
+  const newestFirst = rows[0].date >= rows.at(-1).date;
+  const earliest = newestFirst ? rows.at(-1) : rows[0];
+  if (parsed.account?.balance != null) {
+    const sum = rows.reduce((s, r) => s + r.amount, 0);
+    return { date: earliest.date, balance: Math.round((parsed.account.balance - sum) * 100) / 100 };
+  }
+  if (earliest.balance != null) return { date: earliest.date, balance: Math.round((earliest.balance - earliest.amount) * 100) / 100 };
+  return { date: earliest.date, balance: 0 };
+}
+
 async function importView() {
-  if (!cache.accounts.length) { view.innerHTML = `<div class="card"><p>Add a bank account in <b>Setup</b> first.</p></div>`; return; }
-  view.innerHTML = `<div class="card"><h2>Import a bank statement</h2>
-    <p class="hint">In Westpac or CommBank online banking, export transactions as <b>CSV</b>. Pick the account it belongs to, then choose the file. Importing the same dates twice is safe — duplicates are skipped.</p>
-    <div class="formgrid">
-      <label>Account <select id="i-acct">${cache.accounts.filter(a => a.is_active).map(a => `<option value="${a.id}">${esc(a.name)}</option>`).join('')}</select></label>
-      <label>CSV file <input type="file" id="i-file" accept=".csv,text/csv"></label>
-    </div><div id="i-preview"></div></div>
+  view.innerHTML = `<div class="card"><h2>Import bank statements</h2>
+    <p class="hint">Choose one or more files at once: <b>CSV</b> exports from CommBank or Westpac, or the <b>Account activity PDF</b> from the Westpac app.
+    Each file is matched to an account (or a new account is set up for you). Importing the same dates twice is safe — duplicates are skipped.</p>
+    <label>Statement files <input type="file" id="i-file" accept=".csv,text/csv,.pdf,application/pdf" multiple></label>
+    <div id="i-preview"></div></div>
     <div class="card" id="i-history"></div>`;
+
   $('#i-file').onchange = async e => {
-    const file = e.target.files[0]; if (!file) return;
-    const parsed = parseBankCsv(await file.text());
-    const pv = $('#i-preview');
-    if (parsed.error) { pv.innerHTML = `<p class="msg error">${esc(parsed.error)}</p>`; return; }
-    const ins = parsed.rows.filter(r => r.amount > 0).reduce((s, r) => s + r.amount, 0);
-    const outs = parsed.rows.filter(r => r.amount < 0).reduce((s, r) => s + r.amount, 0);
-    const dates = parsed.rows.map(r => r.date).sort();
-    pv.innerHTML = `<h3>Check before importing</h3>
-      <p>Detected <b>${esc(label(parsed.format))}</b> format · <b>${parsed.rows.length}</b> transactions from ${esc(fmtDate(dates[0]))} to ${esc(fmtDate(dates.at(-1)))} · in ${money(ins)} · out ${money(-outs)}</p>
-      ${parsed.skipped.length ? `<p class="msg error">${parsed.skipped.length} line(s) skipped: ${parsed.skipped.slice(0, 3).map(s => `line ${s.line} (${esc(s.reason)})`).join('; ')}${parsed.skipped.length > 3 ? '…' : ''}</p>` : ''}
-      <div class="tablewrap"><table><thead><tr><th>Date</th><th>Description</th><th class="num">Amount</th><th class="num">Balance</th></tr></thead><tbody>
-      ${parsed.rows.slice(0, 8).map(r => `<tr><td>${esc(fmtDate(r.date))}</td><td>${esc(r.description)}</td><td class="num ${r.amount > 0 ? 'in' : ''}">${money(r.amount)}</td><td class="num">${money(r.balance)}</td></tr>`).join('')}
-      </tbody></table></div>${parsed.rows.length > 8 ? `<p class="hint">…and ${parsed.rows.length - 8} more</p>` : ''}
-      <div class="row"><button class="primary" id="i-go">Import ${parsed.rows.length} transactions into ${esc(refName('accounts', $('#i-acct').value))}</button></div>`;
-    $('#i-acct').onchange = () => { $('#i-go').textContent = `Import ${parsed.rows.length} transactions into ${refName('accounts', $('#i-acct').value)}`; };
-    $('#i-go').onclick = async () => {
+    const files = [...e.target.files]; if (!files.length) return;
+    const pv = $('#i-preview'); pv.innerHTML = '<p>Reading files…</p>';
+    const jobs = [];
+    for (const file of files) {
+      let parsed;
+      try {
+        parsed = /\.pdf$/i.test(file.name) || file.type === 'application/pdf'
+          ? parseWestpacActivity(await readPdfItems(file))
+          : parseBankCsv(await file.text());
+      } catch (err) { parsed = { format: 'unknown', rows: [], skipped: [], error: 'Could not read this file: ' + err.message }; }
+      const acc = parsed.account || {};
+      const match = cache.accounts.find(a => acc.last4 && a.nickname_last4 === acc.last4)
+        || cache.accounts.find(a => acc.name && a.name.toLowerCase() === acc.name.toLowerCase() && !a.nickname_last4);
+      jobs.push({ file, parsed, accountId: match ? match.id : 'new',
+        newName: acc.name ? `${acc.name}${acc.last4 ? ' …' + acc.last4 : ''}` : (guessInstitution(parsed, file.name) + ' account') });
+    }
+    draw();
+
+    function draw() {
+      const ok = jobs.filter(j => !j.parsed.error && j.parsed.rows.length);
+      pv.innerHTML = `<h3>Check before importing</h3>
+        <div class="tablewrap"><table><thead><tr><th>File</th><th>What was found</th><th>Import into</th></tr></thead><tbody>
+        ${jobs.map((j, i) => {
+          const p = j.parsed;
+          if (p.error || !p.rows.length) return `<tr><td>${esc(j.file.name)}</td><td colspan="2" class="msg error">${esc(p.error || 'No transactions found')}</td></tr>`;
+          const dates = p.rows.map(r => r.date).sort();
+          const ins = p.rows.filter(r => r.amount > 0).reduce((s, r) => s + r.amount, 0);
+          const outs = -p.rows.filter(r => r.amount < 0).reduce((s, r) => s + r.amount, 0);
+          return `<tr><td>${esc(j.file.name)}<br><span class="hint">${esc(label(p.format))}${p.account?.name ? ' · ' + esc(p.account.name) : ''}${p.account?.last4 ? ' …' + esc(p.account.last4) : ''}</span></td>
+            <td><b>${p.rows.length}</b> transactions<br><span class="hint">${esc(fmtDate(dates[0]))} – ${esc(fmtDate(dates.at(-1)))}<br>in ${money(ins)} · out ${money(outs)}${p.account?.balance != null ? '<br>balance now ' + money(p.account.balance) : ''}</span>
+              ${p.skipped.length ? `<br><span class="msg error">${p.skipped.length} line(s) skipped</span>` : ''}</td>
+            <td><select data-i="${i}" class="j-acct"><option value="new" ${j.accountId === 'new' ? 'selected' : ''}>+ New account</option>
+              ${cache.accounts.map(a => `<option value="${a.id}" ${a.id === j.accountId ? 'selected' : ''}>${esc(a.name)}</option>`).join('')}</select>
+              ${j.accountId === 'new' ? `<input class="j-name" data-i="${i}" value="${esc(j.newName)}" aria-label="New account name">` : ''}</td></tr>`;
+        }).join('')}</tbody></table></div>
+        ${ok.length ? `<details><summary>Preview first rows</summary>${ok.map(j => `<h3>${esc(j.file.name)}</h3><div class="tablewrap"><table><tbody>${j.parsed.rows.slice(0, 5).map(r => `<tr><td>${esc(fmtDate(r.date))}</td><td>${esc(r.description)}</td><td class="num ${r.amount > 0 ? 'in' : ''}">${money(r.amount)}</td></tr>`).join('')}</tbody></table></div>`).join('')}</details>
+        <div class="row" style="margin-top:1rem"><button class="primary" id="i-go">Import ${ok.reduce((s, j) => s + j.parsed.rows.length, 0)} transactions from ${ok.length} file(s)</button></div>` : ''}`;
+      pv.querySelectorAll('.j-acct').forEach(s => s.onchange = () => { jobs[s.dataset.i].accountId = s.value; draw(); });
+      pv.querySelectorAll('.j-name').forEach(inp => inp.oninput = () => { jobs[inp.dataset.i].newName = inp.value; });
+      $('#i-go')?.addEventListener('click', run);
+    }
+
+    async function run() {
       $('#i-go').disabled = true;
-      const res = await q(sb.rpc('import_transactions', { p_account_id: $('#i-acct').value, p_rows: parsed.rows, p_filename: file.name, p_format: parsed.format }));
-      pv.innerHTML = `<p class="msg"><b>Done.</b> ${res.inserted} new, ${res.duplicates} already there (skipped), ${res.linked_to_bills} matched to bills, ${res.shared_added} added to shared costs.</p>`;
+      const results = [];
+      for (const j of jobs) {
+        const p = j.parsed; if (p.error || !p.rows.length) continue;
+        let accountId = j.accountId;
+        if (accountId === 'new') {
+          const name = (j.newName || '').trim() || 'New account';
+          const open = openingFor(p);
+          const created = await q(sb.from('accounts').insert({ name, institution: guessInstitution(p, j.file.name), account_type: guessType(name),
+            nickname_last4: p.account?.last4 || null, opening_balance: open.balance, opening_date: open.date }).select().single());
+          accountId = created.id; await loadLookups();
+          jobs.filter(o => o !== j && o.accountId === 'new' && o.newName === j.newName).forEach(o => o.accountId = accountId);
+        }
+        // send in chunks so very long histories go through reliably
+        let tot = { inserted: 0, duplicates: 0, linked_to_bills: 0, shared_added: 0 };
+        for (let k = 0; k < p.rows.length; k += 1000) {
+          const res = await q(sb.rpc('import_transactions', { p_account_id: accountId, p_rows: p.rows.slice(k, k + 1000), p_filename: j.file.name, p_format: p.format }));
+          for (const key in tot) tot[key] += res[key] || 0;
+        }
+        results.push(`<li><b>${esc(j.file.name)}</b> → ${esc(refName('accounts', accountId))}: ${tot.inserted} new, ${tot.duplicates} already there, ${tot.linked_to_bills} matched to bills, ${tot.shared_added} added to shared costs</li>`);
+      }
+      pv.innerHTML = `<p class="msg"><b>Done.</b></p><ul>${results.join('')}</ul>
+        <p>Next: <button class="link" id="go-uncat2">sort the uncategorised transactions</button>.</p>`;
+      $('#go-uncat2').onclick = () => show('transactions', { uncategorised: true });
       $('#i-file').value = ''; await loadHistory();
-    };
+    }
   };
+
   async function loadHistory() {
-    const rows = await q(sb.from('import_batches').select('*').order('created_at', { ascending: false }).limit(20));
+    const rows = await q(sb.from('import_batches').select('*').order('created_at', { ascending: false }).limit(30));
     $('#i-history').innerHTML = `<h2>Recent imports</h2>${rows.length ? `<div class="tablewrap"><table><thead><tr><th>When</th><th>Account</th><th>File</th><th class="num">New</th><th class="num">Skipped</th><th></th></tr></thead><tbody>
       ${rows.map((b, i) => `<tr><td>${new Date(b.created_at).toLocaleString('en-AU')}</td><td>${esc(refName('accounts', b.account_id))}</td><td>${esc(b.filename)}</td><td class="num">${b.rows_inserted}</td><td class="num">${b.rows_duplicate}</td>
         <td><button class="small danger undo" data-i="${i}">Undo</button></td></tr>`).join('')}</tbody></table></div>` : '<p class="empty">No imports yet.</p>'}`;
