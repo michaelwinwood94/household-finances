@@ -40,6 +40,8 @@ const refOptions = {
 const refName = (ref, id) => { if (!id) return '—'; const o = refOptions[ref]().find(([v]) => v === id); return o ? o[1].replace(/ \((income|expense|transfer)\)$/, '') : '—'; };
 
 const FREQ = ['once', 'weekly', 'fortnightly', 'monthly', 'quarterly', 'yearly'];
+const PER_MONTH = { once: 0, weekly: 52 / 12, fortnightly: 26 / 12, monthly: 1, quarterly: 1 / 3, yearly: 1 / 12 };
+const sum = (rows, fn) => rows.reduce((t, r) => t + Number(fn(r) || 0), 0);
 
 // ---------- table definitions for the add/edit forms ----------
 const TABLES = {
@@ -68,6 +70,7 @@ const TABLES = {
       { k: 'sort_order', label: 'Sort order', type: 'number', default: 100 },
     ],
     columns: ['name', 'kind', 'is_essential', 'monthly_budget'],
+    footer: rows => ({ monthly_budget: money(sum(rows, r => r.monthly_budget)) }),
   },
   category_rules: {
     title: 'Auto-categorising rules', order: ['priority', 'match_text'],
@@ -100,6 +103,12 @@ const TABLES = {
       { k: 'notes', label: 'Notes', type: 'textarea' },
     ],
     columns: ['name', 'direction', 'amount', 'frequency', 'next_due', 'is_shared', 'my_share_pct'],
+    footer: rows => {
+      const m = (dir, share) => sum(rows.filter(r => r.is_active && r.direction === dir), r => r.amount * PER_MONTH[r.frequency] * (share ? r.my_share_pct / 100 : 1));
+      const inAll = m('in'), outAll = m('out'), inMe = m('in', 1), outMe = m('out', 1);
+      return `Per month — <b>household:</b> in ${money(inAll)} · out ${money(outAll)} · left ${money(inAll - outAll)}
+        &nbsp;|&nbsp; <b>${esc(cache.settings?.display_name || 'my')} share:</b> in ${money(inMe)} · out ${money(outMe)} · left ${money(inMe - outMe)}`;
+    },
   },
   debts: {
     title: 'Debts', order: ['priority', 'creditor'],
@@ -124,6 +133,15 @@ const TABLES = {
       { k: 'notes', label: 'Notes', type: 'textarea' },
     ],
     columns: ['priority', 'creditor', 'debt_type', 'current_balance', 'arrears_amount', 'min_payment', 'hardship_status', 'status'],
+    footer: rows => {
+      const act = rows.filter(r => r.status === 'active');
+      return {
+        current_balance: money(sum(act, r => r.current_balance)),
+        arrears_amount: money(sum(act, r => r.arrears_amount)),
+        min_payment: `${money(sum(act, r => r.min_payment * PER_MONTH[r.payment_frequency || 'monthly']))}<br><span class="hint">per month</span>`,
+        hardship_status: `<span class="hint">active debts only</span>`,
+      };
+    },
   },
   debt_contacts: {
     title: 'Contact log', order: ['contact_date'], desc: true,
@@ -151,6 +169,12 @@ const TABLES = {
       { k: 'notes', label: 'Notes', type: 'textarea' },
     ],
     columns: ['entry_date', 'entry_type', 'description', 'total_amount', 'paid_by', 'my_share_pct'],
+    footer: rows => {
+      const exp = rows.filter(r => r.entry_type === 'expense'), set = rows.filter(r => r.entry_type === 'settlement');
+      const partner = esc(cache.settings?.partner_label || 'Ex-partner');
+      return `Shared expenses ${money(sum(exp, r => r.total_amount))} (you paid ${money(sum(exp.filter(r => r.paid_by === 'me'), r => r.total_amount))}, ${partner} paid ${money(sum(exp.filter(r => r.paid_by === 'partner'), r => r.total_amount))})
+        · Settlements ${money(sum(set, r => r.total_amount))}`;
+    },
   },
 };
 
@@ -213,6 +237,13 @@ function openForm(key, row = null, fixed = {}) {
   });
 }
 
+function footerHtml(def, rows) {
+  if (!def.footer || !rows.length) return '';
+  const f = def.footer(rows);
+  if (typeof f === 'string') return `<tfoot><tr class="total"><td colspan="${def.columns.length + 1}">${f}</td></tr></tfoot>`;
+  return `<tfoot><tr class="total">${def.columns.map((k, i) => `<td class="${/amount|balance|payment|budget/.test(k) ? 'num' : ''}">${f[k] ?? (i === 0 ? `<b>Total</b> <span class="hint">(${rows.length})</span>` : '')}</td>`).join('')}<td></td></tr></tfoot>`;
+}
+
 async function renderCrud(container, key, { filter = {}, title, onChange, extra } = {}) {
   const def = TABLES[key];
   let query = sb.from(key).select('*');
@@ -223,7 +254,8 @@ async function renderCrud(container, key, { filter = {}, title, onChange, extra 
       <button class="primary add">+ Add</button></div>
     ${rows.length ? `<div class="tablewrap"><table><thead><tr>${def.columns.map(k => `<th class="${/amount|balance|payment|budget/.test(k) ? 'num' : ''}">${esc(def.fields.find(f => f.k === k)?.label || label(k))}</th>`).join('')}<th></th></tr></thead>
       <tbody>${rows.map((r, i) => `<tr>${def.columns.map(k => `<td class="${/amount|balance|payment|budget/.test(k) ? 'num' : ''}">${cell(def, r, k)}</td>`).join('')}
-        <td class="row" style="flex-wrap:nowrap">${extra ? extra(r, i) : ''}<button class="small edit" data-i="${i}">Edit</button><button class="small danger del" data-i="${i}">Delete</button></td></tr>`).join('')}</tbody></table></div>`
+        <td class="row" style="flex-wrap:nowrap">${extra ? extra(r, i) : ''}<button class="small edit" data-i="${i}">Edit</button><button class="small danger del" data-i="${i}">Delete</button></td></tr>`).join('')}</tbody>
+      ${footerHtml(def, rows)}</table></div>`
       : `<p class="empty">Nothing here yet.</p>`}`;
   const changed = async () => { await loadLookups(); onChange ? await onChange() : await renderCrud(container, key, { filter, title, onChange, extra }); };
   $('.add', container).onclick = async () => { if (await openForm(key, null, filter)) await changed(); };
@@ -286,14 +318,17 @@ async function dashboard() {
     <div class="grid" style="grid-template-columns:repeat(auto-fit,minmax(320px,1fr))">
       <div class="card"><h2>Next 3 weeks</h2>
         ${upcoming.length ? `<table><tbody>${upcoming.map(u => `<tr class="${u.overdue ? 'overdue' : ''}"><td>${esc(fmtDate(u.due_date))}<br><span class="hint">${u.overdue ? (u.direction === 'in' ? 'not received yet' : 'OVERDUE') : daysFromToday(u.due_date) === 0 ? 'today' : 'in ' + daysFromToday(u.due_date) + ' days'}</span></td>
-          <td>${esc(u.name)}${u.is_shared ? ' <span class="pill">shared</span>' : ''}</td><td class="num ${u.direction === 'in' ? 'in' : ''}">${u.direction === 'in' ? '+' : '−'}${money(u.my_amount)}</td></tr>`).join('')}</tbody></table>`
+          <td>${esc(u.name)}${u.is_shared ? ' <span class="pill">shared</span>' : ''}</td><td class="num ${u.direction === 'in' ? 'in' : ''}">${u.direction === 'in' ? '+' : '−'}${money(u.my_amount)}</td></tr>`).join('')}</tbody>
+          <tfoot><tr class="total"><td><b>Total</b></td><td>In ${money(sum(upcoming.filter(u => u.direction === 'in'), u => u.my_amount))} · Out ${money(sum(upcoming.filter(u => u.direction === 'out'), u => u.my_amount))}</td>
+          <td class="num"><b>${money(sum(upcoming, u => (u.direction === 'in' ? 1 : -1) * u.my_amount))}</b></td></tr></tfoot></table>`
           : '<p class="empty">No bills or income set up yet — add them under Bills &amp; income.</p>'}
       </div>
       <div class="card"><h2>Spending this month</h2>
         ${catSpend.length ? `<table><tbody>${catSpend.map(c => {
           const over = c.monthly_budget && Number(c.spent) > Number(c.monthly_budget);
           return `<tr><td>${esc(c.category)}${c.is_essential ? ' <span class="pill">essential</span>' : ''}</td><td class="num">${money(c.spent)}</td>
-            <td class="num hint">${c.monthly_budget ? `${over ? '<span class="pill bad">over</span> ' : ''}of ${money(c.monthly_budget)}` : ''}</td></tr>`; }).join('')}</tbody></table>`
+            <td class="num hint">${c.monthly_budget ? `${over ? '<span class="pill bad">over</span> ' : ''}of ${money(c.monthly_budget)}` : ''}</td></tr>`; }).join('')}</tbody>
+          <tfoot><tr class="total"><td><b>Total</b></td><td class="num"><b>${money(sum(catSpend, c => c.spent))}</b></td><td></td></tr></tfoot></table>`
           : '<p class="empty">No spending imported for this month yet.</p>'}
       </div>
       <div class="card"><h2>Creditor follow-ups due</h2>
@@ -361,31 +396,49 @@ async function budget() {
 
 // ---------- TRANSACTIONS ----------
 async function transactions(opts = {}) {
-  const state = { month: opts.uncategorised ? '' : today().slice(0, 7), account: '', uncategorised: !!opts.uncategorised, search: '' };
+  const state = { month: opts.uncategorised ? '' : today().slice(0, 7), account: '', category: '', uncategorised: !!opts.uncategorised, search: '' };
   view.innerHTML = `<div class="card"><div class="formgrid">
       <label>Month <input type="month" id="f-month" value="${state.month}"></label>
       <label>Account <select id="f-acct"><option value="">All accounts</option>${cache.accounts.map(a => `<option value="${a.id}">${esc(a.name)}</option>`).join('')}</select></label>
+      <label>Category <select id="f-cat"><option value="">All categories</option>${cache.categories.map(c => `<option value="${c.id}">${esc(c.name)}</option>`).join('')}</select></label>
       <label>Search <input type="search" id="f-search" placeholder="e.g. woolworths"></label>
       <label style="align-self:end"><input type="checkbox" id="f-uncat" ${state.uncategorised ? 'checked' : ''}> Only uncategorised</label>
+      <div class="row" style="align-self:end;margin-bottom:.6rem"><button type="button" id="f-all">All months</button><button type="button" id="f-clear">Clear filters</button></div>
     </div></div><div class="card" id="txlist"></div>`;
   const catOpts = (sel) => `<option value="">— choose —</option>` + cache.categories.map(c => `<option value="${c.id}" ${c.id === sel ? 'selected' : ''}>${esc(c.name)}</option>`).join('');
   async function load() {
-    let query = sb.from('transactions').select('*').order('txn_date', { ascending: false }).order('created_at', { ascending: false }).limit(500);
-    if (state.month) { const [y, m] = state.month.split('-').map(Number); const end = new Date(y, m, 1).toLocaleDateString('en-CA'); query = query.gte('txn_date', state.month + '-01').lt('txn_date', end); }
-    if (state.account) query = query.eq('account_id', state.account);
-    if (state.uncategorised) query = query.is('category_id', null);
-    if (state.search) query = query.ilike('description', `%${state.search.replace(/[%_]/g, '')}%`);
-    const rows = await q(query);
-    const total = rows.reduce((s, r) => s + Number(r.amount), 0);
+    // fetch every matching row (in pages) so the totals cover the whole filter; show the first 500
+    const build = () => {
+      let query = sb.from('transactions').select('*').order('txn_date', { ascending: false }).order('created_at', { ascending: false });
+      if (state.month) { const [y, m] = state.month.split('-').map(Number); const end = new Date(y, m, 1).toLocaleDateString('en-CA'); query = query.gte('txn_date', state.month + '-01').lt('txn_date', end); }
+      if (state.account) query = query.eq('account_id', state.account);
+      if (state.uncategorised) query = query.is('category_id', null);
+      else if (state.category) query = query.eq('category_id', state.category);
+      if (state.search) query = query.ilike('description', `%${state.search.replace(/[%_,()]/g, '')}%`);
+      return query;
+    };
+    let all = [];
+    for (let from = 0; ; from += 1000) {
+      const page = await q(build().range(from, from + 999));
+      all = all.concat(page); if (page.length < 1000) break;
+    }
+    const rows = all.slice(0, 500);
+    const tIn = sum(all.filter(r => r.amount > 0), r => r.amount), tOut = -sum(all.filter(r => r.amount < 0), r => r.amount);
+    const transferIds = new Set(cache.categories.filter(c => c.kind === 'transfer').map(c => c.id));
+    const nonTr = all.filter(r => !transferIds.has(r.category_id));
+    const xIn = sum(nonTr.filter(r => r.amount > 0), r => r.amount), xOut = -sum(nonTr.filter(r => r.amount < 0), r => r.amount);
+    const totalsRow = `<tfoot><tr class="total"><td><b>Total</b><br><span class="hint">${all.length} transaction(s)</span></td>
+      <td>Money in ${money(tIn)} · Money out ${money(tOut)}${transferIds.size && nonTr.length !== all.length ? `<br><span class="hint">Excluding transfers: in ${money(xIn)} · out ${money(xOut)} · net ${money(xIn - xOut)}</span>` : ''}</td>
+      <td class="num"><b>${money(tIn - tOut)}</b></td><td colspan="3"></td></tr></tfoot>`;
     const box = $('#txlist');
-    box.innerHTML = rows.length ? `<p>${rows.length} transaction(s) · net ${money(total)}${rows.length === 500 ? ' (showing first 500)' : ''}</p>
+    box.innerHTML = rows.length ? `<p>${all.length} transaction(s) · in ${money(tIn)} · out ${money(tOut)} · net <b>${money(tIn - tOut)}</b>${all.length > 500 ? ' — totals cover all of them; the list shows the newest 500' : ''}</p>
       <div class="tablewrap"><table><thead><tr><th>Date</th><th>Description</th><th class="num">Amount</th><th>Category</th><th class="hide-sm">Shared</th><th></th></tr></thead><tbody>
       ${rows.map((r, i) => `<tr><td>${esc(fmtDate(r.txn_date))}<br><span class="hint hide-sm">${esc(refName('accounts', r.account_id))}</span></td><td>${esc(r.description)}</td>
         <td class="num ${r.amount > 0 ? 'in' : ''}">${money(r.amount)}</td>
         <td><select data-i="${i}" class="cat" aria-label="Category">${catOpts(r.category_id)}</select>${r.category_source === 'rule' ? '<br><span class="hint">by rule</span>' : ''}</td>
         <td class="hide-sm"><input type="checkbox" class="shr" data-i="${i}" ${r.is_shared ? 'checked' : ''} aria-label="Shared"></td>
         <td><button class="small mkrule" data-i="${i}" title="Always categorise transactions like this">Make rule</button></td></tr>`).join('')}
-      </tbody></table></div>` : '<p class="empty">No transactions match.</p>';
+      </tbody>${totalsRow}</table></div>` : '<p class="empty">No transactions match.</p>';
     box.querySelectorAll('.cat').forEach(s => s.onchange = async () => {
       const r = rows[s.dataset.i];
       await q(sb.from('transactions').update({ category_id: s.value || null, category_source: s.value ? 'manual' : 'none' }).eq('id', r.id));
@@ -405,6 +458,12 @@ async function transactions(opts = {}) {
   }
   $('#f-month').onchange = e => { state.month = e.target.value; load(); };
   $('#f-acct').onchange = e => { state.account = e.target.value; load(); };
+  $('#f-cat').onchange = e => { state.category = e.target.value; load(); };
+  $('#f-all').onclick = () => { state.month = ''; $('#f-month').value = ''; load(); };
+  $('#f-clear').onclick = () => {
+    Object.assign(state, { month: today().slice(0, 7), account: '', category: '', uncategorised: false, search: '' });
+    $('#f-month').value = state.month; $('#f-acct').value = ''; $('#f-cat').value = ''; $('#f-uncat').checked = false; $('#f-search').value = ''; load();
+  };
   $('#f-uncat').onchange = e => { state.uncategorised = e.target.checked; load(); };
   let t; $('#f-search').oninput = e => { clearTimeout(t); t = setTimeout(() => { state.search = e.target.value.trim(); load(); }, 350); };
   await load();

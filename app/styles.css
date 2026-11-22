@@ -66,3 +66,5 @@ dialog::backdrop { background: rgba(0,0,0,.4); }
   .hide-sm { display: none; }
   main { padding: .6rem; }
 }
+
+tfoot tr.total td { border-top: 2px solid var(--ink); border-bottom: 0; font-weight: 400; background: #f0ede4; }
