@@ -85,6 +85,18 @@ main { max-width: 1120px; margin: 0 auto; padding: 1.4rem 1.25rem 4rem; }
 .due-list li > :last-child { justify-self: end; }
 .total-line { text-align: right; margin-top: .6rem; }
 
+/* ---- person switch (top bar) ---- */
+.topbar-right { display: flex; align-items: center; gap: 1rem; }
+.seg.whoseg { background: rgba(255,255,255,.14); align-items: center; }
+.whoseg .who-label { font-size: .8rem; color: rgba(255,255,255,.75); padding: 0 .4rem 0 .6rem; }
+.seg.whoseg button { color: rgba(255,255,255,.92); }
+.seg.whoseg button:hover { background: rgba(255,255,255,.18); }
+.seg.whoseg button.on { background: #fff; color: var(--brand); }
+.whoseg.dim { opacity: .55; }
+.who-now { display: inline-block; background: var(--brand-soft); color: var(--brand); font-weight: 700; padding: .3rem .8rem; border-radius: 999px; font-size: .9rem; }
+.who-now.inline { margin-top: .35rem; }
+@media (max-width: 640px) { .topbar { flex-wrap: wrap; gap: .5rem; } .whoseg .who-label { display: none; } .whoseg button { padding: .25rem .6rem; } }
+
 /* ---- segmented control ---- */
 .seg { display: inline-flex; background: #eeebe3; border-radius: 999px; padding: 3px; gap: 2px; }
 .seg button { border: 0; background: transparent; font: inherit; font-size: .85rem; padding: .3rem .75rem; border-radius: 999px; cursor: pointer; color: var(--ink-2); }

@@ -1,7 +1,7 @@
 import { createClient } from 'https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2/+esm';
-import { SUPABASE_URL, SUPABASE_PUBLISHABLE_KEY } from './config.js?v=202611222359';
-import { parseBankCsv, parseWestpacActivity, splitAccounts } from './csv.js?v=202611222359';
-import { columnChart, hbarChart, SERIES, moneyRound, moneyCompact } from './charts.js?v=202611222359';
+import { SUPABASE_URL, SUPABASE_PUBLISHABLE_KEY } from './config.js?v=202611230005';
+import { parseBankCsv, parseWestpacActivity, splitAccounts } from './csv.js?v=202611230005';
+import { columnChart, hbarChart, SERIES, moneyRound, moneyCompact } from './charts.js?v=202611230005';
 
 const sb = createClient(SUPABASE_URL, SUPABASE_PUBLISHABLE_KEY);
 const $ = (s, el = document) => el.querySelector(s);
@@ -198,19 +198,18 @@ function cell(def, row, k) {
 // Two views of the same bills/income table, with friendlier columns
 const FREQ_WORD = { once: 'once', weekly: 'week', fortnightly: 'fortnight', monthly: 'month', quarterly: 'quarter', yearly: 'year' };
 TABLES.bills = { ...TABLES.recurring_items, table: 'recurring_items', title: 'Your bills', order: ['next_due'], addTitle: 'bill',
-  columns: ['name', 'amount_freq', 'per_month', 'next', 'share'],
+  columns: ['name', 'amount_freq', 'who_month', 'next', 'share'],
   footer: rows => {
-    const act = rows.filter(r => r.is_active && !r.debt_id);
-    return { per_month: `<b>${money(sum(act, r => r.amount * PER_MONTH[r.frequency]))}</b><br><span class="hint">your share ${money(sum(act, r => r.amount * PER_MONTH[r.frequency] * r.my_share_pct / 100))}</span>`,
-             name: `<b>Total per month</b><br><span class="hint">loan repayments are counted under Debts</span>` };
+    const act = rows.filter(r => r.is_active);
+    return { who_month: `<b>${money(sum(act, r => r.amount * PER_MONTH[r.frequency] * shareFor(r.my_share_pct)))}</b>`,
+             name: `<b>Total per month</b><br><span class="hint">including loan repayments</span>` };
   } };
 TABLES.income = { ...TABLES.recurring_items, table: 'recurring_items', title: 'Your income', order: ['next_due'], addTitle: 'income',
   fields: TABLES.recurring_items.fields.filter(f => f.k !== 'debt_id').map(f => f.k === 'match_text' ? { ...f, hint: 'When an imported deposit contains this, it is marked received and the date moves on' } : f),
-  columns: ['name', 'amount_freq', 'per_month', 'next', 'share'],
+  columns: ['name', 'amount_freq', 'who_month', 'next', 'share'],
   footer: rows => {
     const act = rows.filter(r => r.is_active);
-    return { per_month: `<b>${money(sum(act, r => r.amount * PER_MONTH[r.frequency]))}</b><br><span class="hint">yours ${money(sum(act, r => r.amount * PER_MONTH[r.frequency] * r.my_share_pct / 100))}</span>`,
-             name: `<b>Total per month</b>` };
+    return { who_month: `<b>${money(sum(act, r => r.amount * PER_MONTH[r.frequency] * shareFor(r.my_share_pct)))}</b>`, name: `<b>Total per month</b>` };
   } };
 TABLES.debts.columns = ['creditor', 'current_balance', 'arrears_amount', 'monthly', 'hardship_status', 'share'];
 TABLES.debts.headers = { creditor: 'Owed to', current_balance: 'Balance', arrears_amount: 'Overdue', hardship_status: 'Hardship' };
@@ -219,7 +218,28 @@ TABLES.debts.footer = rows => {
   return { creditor: '<b>Total</b> <span class="hint">(active)</span>', current_balance: `<b>${money(sum(act, r => r.current_balance))}</b>`,
     arrears_amount: money(sum(act, r => r.arrears_amount)), monthly: `<b>${money(sum(act, r => r.min_payment * PER_MONTH[r.payment_frequency || 'monthly']))}</b>` };
 };
+// Whose view a Bills/Income page is showing: 'all' | 'me' | 'partner'
+let personView = (() => { try { return localStorage.getItem('personView') || 'all'; } catch { return 'all'; } })();
+if (!['all', 'me', 'partner'].includes(personView)) personView = 'all';
+const personNames = () => ({ all: 'Household', me: cache.settings?.display_name || 'Me', partner: cache.settings?.partner_label || 'Partner' });
+const personName = () => personNames()[personView];
+// Pages that change with the person switch; others show household figures and say so
+const PERSON_PAGES = ['dashboard', 'budget', 'bills', 'income', 'debts'];
+function renderWhoSwitch() {
+  const box = $('#whoswitch'); if (!box) return;
+  box.innerHTML = `<span class="who-label">Showing</span>` + Object.entries(personNames()).map(([k, v]) =>
+    `<button class="${k === personView ? 'on' : ''}" data-person="${k}" aria-pressed="${k === personView}">${esc(v)}</button>`).join('');
+  box.classList.toggle('dim', !PERSON_PAGES.includes(currentView));
+  box.title = PERSON_PAGES.includes(currentView) ? '' : 'This page shows household figures';
+  box.querySelectorAll('[data-person]').forEach(b => b.onclick = () => {
+    personView = b.dataset.person; try { localStorage.setItem('personView', personView); } catch {}
+    renderWhoSwitch(); if (PERSON_PAGES.includes(currentView)) show(currentView);
+  });
+}
+const shareFor = (pct, who = personView) => { const m = Number(pct ?? 100) / 100; return who === 'me' ? m : who === 'partner' ? 1 - m : 1; };
 const VIRTUAL = {
+  who_month: { label: 'Per month', num: true, html: r => r.debt_id && r.direction === 'out' && personView === 'all' ? `${money(r.amount * PER_MONTH[r.frequency])}<div class="hint">in Debts</div>`
+    : money(r.amount * PER_MONTH[r.frequency] * shareFor(r.my_share_pct)) },
   amount_freq: { label: 'Amount', num: true, html: r => `${money(r.amount)} <span class="hint">/ ${FREQ_WORD[r.frequency] || r.frequency}</span>` },
   per_month: { label: 'Per month', num: true, html: r => r.debt_id ? '<span class="hint">in Debts</span>' : money(r.amount * PER_MONTH[r.frequency]) },
   monthly: { label: 'Per month', num: true, html: r => r.min_payment ? money(r.min_payment * PER_MONTH[r.payment_frequency || 'monthly']) : '<span class="hint">—</span>' },
@@ -336,21 +356,21 @@ function footerHtml(def, rows) {
   return `<tfoot><tr class="total">${def.columns.map((k, i) => `<td class="${VIRTUAL[k]?.num || /amount|balance|payment|budget/.test(k) ? 'num' : ''}">${f[k] ?? (i === 0 ? `<b>Total</b> <span class="hint">(${rows.length})</span>` : '')}</td>`).join('')}<td></td></tr></tfoot>`;
 }
 
-async function renderCrud(container, key, { filter = {}, title, onChange, extra, subtitle } = {}) {
+async function renderCrud(container, key, { filter = {}, title, onChange, extra, subtitle, rowFilter, headers } = {}) {
   const def = TABLES[key];
   let query = sb.from(def.table || key).select('*');
   for (const [k, v] of Object.entries(filter)) query = query.eq(k, v);
   for (const o of def.order) query = query.order(o, { ascending: !def.desc });
-  const rows = await q(query);
+  const rows = (await q(query)).filter(r => !rowFilter || rowFilter(r));
   const isNum = k => VIRTUAL[k]?.num || /amount|balance|payment|budget/.test(k);
   container.innerHTML = `<div class="sec-head"><div><h2>${esc(title || def.title)}</h2>${subtitle ? `<p class="hint">${subtitle}</p>` : ''}</div>
       <button class="primary add">+ Add</button></div>
-    ${rows.length ? `<div class="tablewrap"><table class="list"><thead><tr>${def.columns.map(k => `<th class="${isNum(k) ? 'num' : ''}">${esc(def.headers?.[k] || VIRTUAL[k]?.label || def.fields.find(f => f.k === k)?.label || label(k))}</th>`).join('')}<th></th></tr></thead>
+    ${rows.length ? `<div class="tablewrap"><table class="list"><thead><tr>${def.columns.map(k => `<th class="${isNum(k) ? 'num' : ''}">${esc(headers?.[k] || def.headers?.[k] || VIRTUAL[k]?.label || def.fields.find(f => f.k === k)?.label || label(k))}</th>`).join('')}<th></th></tr></thead>
       <tbody>${rows.map((r, i) => `<tr class="${r.is_active === false ? 'muted' : ''}">${def.columns.map(k => `<td class="${isNum(k) ? 'num' : ''}">${cell(def, r, k)}</td>`).join('')}
         <td class="actions">${extra ? extra(r, i) : ''}<button class="small edit" data-i="${i}">Edit</button><button class="small ghost del" data-i="${i}" title="Delete" aria-label="Delete">✕</button></td></tr>`).join('')}</tbody>
       ${footerHtml(def, rows)}</table></div>`
       : `<p class="empty">Nothing here yet.</p>`}`;
-  const changed = async () => { await loadLookups(); onChange ? await onChange() : await renderCrud(container, key, { filter, title, onChange, extra }); };
+  const changed = async () => { await loadLookups(); onChange ? await onChange() : await renderCrud(container, key, { filter, title, onChange, extra, subtitle, rowFilter, headers }); };
   $('.add', container).onclick = async () => { if (await openForm(key, null, filter)) await changed(); };
   container.querySelectorAll('.edit').forEach(b => b.onclick = async () => { if (await openForm(key, rows[b.dataset.i], filter)) await changed(); });
   container.querySelectorAll('.del').forEach(b => b.onclick = async () => {
@@ -374,7 +394,7 @@ async function dashboard() {
   view.innerHTML = '<p class="loading">Loading…</p>';
   const rank = { urgent: 0, warning: 1, info: 2 };
   const monthStart = today().slice(0, 8) + '01';
-  const [alertsRaw, bal, cash, debt, shared, upcoming, followups, catSpend, uncat, lastTxn, debtRows] = await Promise.all([
+  let [alertsRaw, bal, cash, debt, shared, upcoming, followups, catSpend, uncat, lastTxn, debtRows] = await Promise.all([
     q(sb.from('alerts').select('*').eq('dismissed', false).order('due_date')),
     q(sb.from('v_account_balances').select('*').eq('is_active', true)),
     q(sb.from('v_monthly_cashflow').select('*').order('month', { ascending: false }).limit(12)),
@@ -385,14 +405,19 @@ async function dashboard() {
     q(sb.from('v_category_spend_month').select('*').order('month', { ascending: false }).limit(400)),
     sb.from('transactions').select('id', { count: 'exact', head: true }).is('category_id', null),
     q(sb.from('transactions').select('txn_date').order('txn_date', { ascending: false }).limit(1)),
-    q(sb.from('debts').select('current_balance').eq('status', 'active')),
+    q(sb.from('debts').select('current_balance, my_share_pct, arrears_amount').eq('status', 'active')),
   ]);
   const alerts = alertsRaw.sort((a, b) => rank[a.severity] - rank[b.severity]);
   const uncatCount = uncat.count || 0;
   const name = cache.settings?.display_name;
   const isLoan = a => ['loan', 'mortgage', 'credit_card'].includes(a.account_type);
   const cashAccts = bal.filter(a => !isLoan(a));
-  const myCash = sum(cashAccts, a => Number(a.calculated_balance) * (a.is_joint ? Number(a.my_share_pct ?? 100) / 100 : 1));
+  // own accounts count as the signed-in person's; joint accounts split by their share %
+  const myCash = sum(cashAccts, a => Number(a.calculated_balance) * (personView === 'all' ? 1 : a.is_joint ? shareFor(a.my_share_pct) : personView === 'me' ? 1 : 0));
+  const pName = personView === 'all' ? 'household' : personName();
+  const upShare = u => personView === 'all' ? Number(u.amount) : personView === 'me' ? Number(u.my_amount) : Number(u.amount) - Number(u.my_amount);
+  upcoming = upcoming.filter(u => upShare(u) > 0.004).map(u => ({ ...u, my_amount: upShare(u) }));
+  const spendShare = shareFor(cache.settings?.default_my_share_pct ?? 50);
   const thisMonth = cash.find(c => c.month === monthStart) || {};
   const dueOut = upcoming.filter(u => u.direction === 'out');
   const dueTotal = sum(dueOut, u => u.my_amount);
@@ -402,7 +427,7 @@ async function dashboard() {
   const s = Number(shared?.balance || 0), partner = cache.settings?.partner_label || 'Ex-partner';
 
   view.innerHTML = `
-    <div class="page-head"><div><h1 class="page-title">${greet}${name ? ', ' + esc(name) : ''}</h1>
+    <div class="page-head"><div><h1 class="page-title">${greet}${name ? ', ' + esc(name) : ''}</h1>${personView !== 'all' ? `<div class="who-now inline">Showing ${esc(personName())}</div>` : ''}
       <p class="hint">${lastTxn[0] ? `Bank data up to ${esc(fmtDate(lastTxn[0].txn_date))} · <button class="link" data-go="import">import newer statements</button>` : 'No statements imported yet — <button class="link" data-go="import">import your first</button>'}</p></div></div>
 
     ${alerts.length ? `<div class="alerts">${alerts.slice(0, 4).map((a, i) => `<div class="alert ${a.severity}">
@@ -412,14 +437,14 @@ async function dashboard() {
       ${alerts.length > 4 ? `<p class="hint">+ ${alerts.length - 4} more alert(s)</p>` : ''}</div>` : ''}
 
     <div class="tiles">
-      <div class="tile"><div class="tile-label">Money in your accounts</div><div class="tile-value">${moneyRound(myCash)}</div>
-        <div class="tile-sub">your share, ${cashAccts.length} account${cashAccts.length === 1 ? '' : 's'}</div></div>
-      <div class="tile ${Number(thisMonth.net) < 0 ? 'bad' : 'good'}"><div class="tile-label">This month so far</div><div class="tile-value">${Number(thisMonth.net) >= 0 ? '+' : ''}${moneyRound(thisMonth.net || 0)}</div>
+      <div class="tile"><div class="tile-label">Money in accounts</div><div class="tile-value">${moneyRound(myCash)}</div>
+        <div class="tile-sub">${esc(pName)}${personView === 'all' ? '' : ' share'}, ${cashAccts.length} account${cashAccts.length === 1 ? '' : 's'}</div></div>
+      <div class="tile ${Number(thisMonth.net) < 0 ? 'bad' : 'good'}"><div class="tile-label">This month so far <span class="hint">(household)</span></div><div class="tile-value">${Number(thisMonth.net) >= 0 ? '+' : ''}${moneyRound(thisMonth.net || 0)}</div>
         <div class="tile-sub">in ${moneyRound(thisMonth.money_in || 0)} · out ${moneyRound(thisMonth.money_out || 0)}</div></div>
       <div class="tile ${overdue.length ? 'bad' : dueOut.length ? 'warn' : ''}"><div class="tile-label">Bills due in 14 days</div><div class="tile-value">${moneyRound(dueTotal)}</div>
-        <div class="tile-sub">${dueOut.length} bill${dueOut.length === 1 ? '' : 's'}, your share${overdue.length ? ` · <b>${overdue.length} overdue</b>` : ''}</div></div>
-      <div class="tile"><div class="tile-label">Total debt</div><div class="tile-value">${moneyCompact(sum(debtRows, x => x.current_balance))}</div>
-        <div class="tile-sub">your share ${moneyRound(debt?.my_total_owed || 0)}${Number(debt?.my_total_arrears) ? ` · overdue ${moneyRound(debt.my_total_arrears)}` : ''}</div></div>
+        <div class="tile-sub">${dueOut.length} bill${dueOut.length === 1 ? '' : 's'}, ${esc(pName)}${overdue.length ? ` · <b>${overdue.length} overdue</b>` : ''}</div></div>
+      <div class="tile"><div class="tile-label">Debt</div><div class="tile-value">${moneyCompact(sum(debtRows, x => x.current_balance * shareFor(x.my_share_pct)))}</div>
+        <div class="tile-sub">${esc(pName)}${sum(debtRows, x => x.arrears_amount * shareFor(x.my_share_pct)) ? ` · overdue ${moneyRound(sum(debtRows, x => x.arrears_amount * shareFor(x.my_share_pct)))}` : ''}</div></div>
     </div>
 
     ${uncatCount || debt?.hardship_to_request || followups.length || s ? `<div class="chips">
@@ -430,7 +455,7 @@ async function dashboard() {
     </div>` : ''}
 
     <div class="grid2">
-      <section class="card"><div class="sec-head"><div><h2>Coming up</h2><p class="hint">Next 14 days · your share</p></div><button class="small" data-go="bills">All bills</button></div>
+      <section class="card"><div class="sec-head"><div><h2>Coming up</h2><p class="hint">Next 14 days · ${esc(pName)} amounts</p></div><button class="small" data-go="bills">All bills</button></div>
         ${upcoming.length ? `<ul class="due-list">${upcoming.map(u => {
           const d = daysFromToday(u.due_date);
           const when = u.overdue ? (u.direction === 'in' ? 'late' : 'overdue') : d === 0 ? 'today' : d === 1 ? 'tomorrow' : `in ${d} days`;
@@ -440,7 +465,7 @@ async function dashboard() {
             ${u.direction === 'out' && d <= 7 ? `<button class="small mark-paid" data-id="${u.item_id}" data-due="${u.due_date}">Paid</button>` : '<span></span>'}</li>`; }).join('')}</ul>`
           : '<p class="empty">Nothing due in the next 14 days.</p>'}
       </section>
-      <section class="card"><div class="sec-head"><div><h2>Where the money went</h2><p class="hint">Household spending by category</p></div>
+      <section class="card"><div class="sec-head"><div><h2>Where the money went</h2><p class="hint">${personView === 'all' ? 'Household spending' : esc(personName()) + "'s share of spending"} by category</p></div>
           <div class="seg" role="tablist">${[['this', 'This month'], ['last', 'Last month'], ['avg3', '3-month avg']].map(([k, l]) => `<button class="${spendPeriod === k ? 'on' : ''}" data-period="${k}">${l}</button>`).join('')}</div></div>
         <div id="spend-chart"></div></section>
     </div>
@@ -464,7 +489,7 @@ async function dashboard() {
     const pick = spendPeriod === 'this' ? [monthStart] : spendPeriod === 'last' ? [lastM] : ms.filter(m => m < monthStart).slice(0, 3);
     const div = spendPeriod === 'avg3' ? Math.max(1, pick.length) : 1;
     const totals = new Map();
-    for (const c of catSpend.filter(c => pick.includes(c.month))) totals.set(c.category, (totals.get(c.category) || 0) + Number(c.spent) / div);
+    for (const c of catSpend.filter(c => pick.includes(c.month))) totals.set(c.category, (totals.get(c.category) || 0) + Number(c.spent) * spendShare / div);
     let items = [...totals.entries()].map(([label, value]) => ({ label, value })).filter(i => i.value > 0.5).sort((a, b) => b.value - a.value);
     if (items.length > 8) { const rest = items.slice(7); items = items.slice(0, 7).concat([{ label: `Other (${rest.length})`, value: sum(rest, r => r.value) }]); }
     const budgets = new Map(cache.categories.filter(c => c.monthly_budget).map(c => [c.name, Number(c.monthly_budget)]));
@@ -486,7 +511,7 @@ async function dashboard() {
 }
 
 // ---------- BUDGET (Overall / me / partner) ----------
-let budgetWho = 'overall';
+
 async function budget() {
   view.innerHTML = '<p class="loading">Loading…</p>';
   const months = 6;
@@ -494,6 +519,7 @@ async function budget() {
   const me = cache.settings?.display_name || 'Me';
   const names = { overall: 'Household', me, partner: r.partner };
   const draw = () => {
+    const budgetWho = { all: 'overall', me: 'me', partner: 'partner' }[personView];
     const p = r.people[budgetWho];
     const costs = p.regular_out + p.debt_monthly;
     const gap = p.regular_in - costs;
@@ -502,7 +528,7 @@ async function budget() {
     const list = (rows, cols) => rows.length ? `<div class="tablewrap"><table class="list"><tbody>${rows.map(r => `<tr>${cols.map((c, i) => `<td class="${i ? 'num' : ''}">${c(r)}</td>`).join('')}</tr>`).join('')}</tbody></table></div>` : '<p class="empty">None.</p>';
     view.innerHTML = `
       <div class="page-head"><div><h1 class="page-title">Budget</h1><p class="hint">Regular income and costs per month, split by who pays</p></div>
-        <div class="seg big" role="tablist">${Object.entries(names).map(([k, v]) => `<button class="${k === budgetWho ? 'on' : ''}" data-who="${k}" role="tab" aria-selected="${k === budgetWho}">${esc(v)}</button>`).join('')}</div></div>
+        <div class="who-now">${esc(names[budgetWho])}</div></div>
 
       <div class="tiles">
         <div class="tile"><div class="tile-label">Regular income</div><div class="tile-value">${moneyRound(p.regular_in)}</div><div class="tile-sub">per month</div></div>
@@ -535,7 +561,7 @@ async function budget() {
     if (spend.length > 8) { const rest = spend.slice(7); spend = spend.slice(0, 7).concat([{ label: `Other (${rest.length})`, value: sum(rest, x => x.value) }]); }
     hbarChart($('#b-spend'), { items: spend, color: SERIES.orange, empty: 'No spending imported.' });
     if (spend.length) $('#b-spend').insertAdjacentHTML('beforeend', `<p class="hint total-line">Total ${money(p.actual_out)} per month · income ${money(p.actual_in)}</p>`);
-    view.querySelectorAll('[data-who]').forEach(b => b.onclick = () => { budgetWho = b.dataset.who; draw(); });
+
   };
   draw();
 }
@@ -926,40 +952,65 @@ async function importView() {
 async function recurringPage(kind) {
   const isBills = kind === 'bills';
   const dir = isBills ? 'out' : 'in';
+  const me = cache.settings?.display_name || 'Me', partner = cache.settings?.partner_label || 'Partner';
+  const names = { all: 'Household', me, partner };
+  const whoName = names[personView];
+  const possessive = personView === 'all' ? (isBills ? 'household' : 'household') : `${whoName}'s`;
   view.innerHTML = `<div class="page-head"><div><h1 class="page-title">${isBills ? 'Bills' : 'Income'}</h1>
-      <p class="hint">${isBills ? 'Regular payments, including loan repayments. Matched automatically when you import statements.' : 'Regular money coming in. Matched automatically when you import statements.'}</p></div></div>
+      <p class="hint">${isBills ? 'Regular payments, including loan repayments.' : 'Regular money coming in.'} Matched automatically when you import statements.</p></div>
+      <div class="who-now">${esc(names[personView])}</div></div>
     <div class="tiles" id="r-tiles"></div>
-    <section class="card"><div class="sec-head"><div><h2>${isBills ? 'Due' : 'Expected'} in the next 5 weeks</h2><p class="hint">your share</p></div></div><div id="r-up"></div></section>
+    <div class="grid2">
+      <section class="card"><div class="sec-head"><div><h2>${isBills ? 'Due' : 'Expected'} in the next 5 weeks</h2><p class="hint">${esc(possessive)} amounts</p></div></div><div id="r-up"></div></section>
+      <section class="card"><div class="sec-head"><div><h2>Per month</h2><p class="hint">${esc(possessive)} ${isBills ? 'bills' : 'income'} by source</p></div></div><div id="r-chart"></div></section>
+    </div>
     <section class="card" id="r-list"></section>`;
+
+
   const drawTop = async () => {
-    const [items, up] = await Promise.all([
+    const [itemsAll, up] = await Promise.all([
       q(sb.from('recurring_items').select('*').eq('direction', dir).eq('is_active', true)),
       q(sb.rpc('upcoming_items', { p_days: 35 })),
     ]);
-    const counted = items.filter(i => !(isBills && i.debt_id));
-    const pm = sum(counted, i => i.amount * PER_MONTH[i.frequency]);
-    const pmMe = sum(counted, i => i.amount * PER_MONTH[i.frequency] * i.my_share_pct / 100);
-    const repay = sum(items.filter(i => i.debt_id), i => i.amount * PER_MONTH[i.frequency] * i.my_share_pct / 100);
-    const mine = up.filter(u => u.direction === dir);
+    const items = itemsAll.filter(i => shareFor(i.my_share_pct) > 0);
+    const monthly = i => i.amount * PER_MONTH[i.frequency] * shareFor(i.my_share_pct);
+    const pm = sum(items, monthly);
+    const upShare = u => personView === 'all' ? Number(u.amount) : personView === 'me' ? Number(u.my_amount) : Number(u.amount) - Number(u.my_amount);
+    const mine = up.filter(u => u.direction === dir && upShare(u) > 0.004);
     const late = mine.filter(u => u.overdue);
-    $('#r-tiles').innerHTML = `
-      <div class="tile"><div class="tile-label">${isBills ? 'Bills' : 'Income'} per month</div><div class="tile-value">${moneyRound(pm)}</div><div class="tile-sub">household${isBills ? ', not counting loan repayments' : ''}</div></div>
-      <div class="tile"><div class="tile-label">Your share</div><div class="tile-value">${moneyRound(pmMe)}</div><div class="tile-sub">per month${isBills && repay ? ` · plus ${moneyRound(repay)} loan repayments` : ''}</div></div>
-      <div class="tile ${late.length ? 'bad' : ''}"><div class="tile-label">${isBills ? 'Overdue' : 'Late'}</div><div class="tile-value">${late.length}</div><div class="tile-sub">${late.length ? moneyRound(sum(late, u => u.my_amount)) + ' your share' : 'all up to date'}</div></div>`;
+    const pmFor = who => sum(itemsAll, i => i.amount * PER_MONTH[i.frequency] * shareFor(i.my_share_pct, who));
+    $('#r-tiles').innerHTML = personView === 'all' ? `
+      <div class="tile"><div class="tile-label">${isBills ? 'Bills' : 'Income'} per month</div><div class="tile-value">${moneyRound(pm)}</div><div class="tile-sub">household${isBills ? ', including loan repayments' : ''}</div></div>
+      <div class="tile"><div class="tile-label">${esc(me)}</div><div class="tile-value">${moneyRound(pmFor('me'))}</div><div class="tile-sub">per month</div></div>
+      <div class="tile"><div class="tile-label">${esc(partner)}</div><div class="tile-value">${moneyRound(pmFor('partner'))}</div><div class="tile-sub">per month</div></div>
+      <div class="tile ${late.length ? 'bad' : ''}"><div class="tile-label">${isBills ? 'Overdue' : 'Late'}</div><div class="tile-value">${late.length}</div><div class="tile-sub">${late.length ? moneyRound(sum(late, upShare)) : 'all up to date'}</div></div>`
+    : `
+      <div class="tile"><div class="tile-label">${esc(whoName)} — per month</div><div class="tile-value">${moneyRound(pm)}</div><div class="tile-sub">${items.length} item${items.length === 1 ? '' : 's'}</div></div>
+      <div class="tile"><div class="tile-label">Per fortnight</div><div class="tile-value">${moneyRound(pm * 12 / 26)}</div><div class="tile-sub">same amount, fortnightly</div></div>
+      <div class="tile"><div class="tile-label">Share of household</div><div class="tile-value">${pmFor('all') ? Math.round(pm / pmFor('all') * 100) : 0}%</div><div class="tile-sub">of ${moneyRound(pmFor('all'))} a month</div></div>
+      <div class="tile ${late.length ? 'bad' : ''}"><div class="tile-label">${isBills ? 'Overdue' : 'Late'}</div><div class="tile-value">${late.length}</div><div class="tile-sub">${late.length ? moneyRound(sum(late, upShare)) : 'all up to date'}</div></div>`;
     $('#r-up').innerHTML = mine.length ? `<ul class="due-list">${mine.map(u => {
       const d = daysFromToday(u.due_date);
       const when = u.overdue ? (isBills ? 'overdue' : 'late') : d === 0 ? 'today' : d === 1 ? 'tomorrow' : `in ${d} days`;
+      const part = upShare(u) < Number(u.amount) - 0.004 ? ` · share of ${money(u.amount)}` : '';
       return `<li class="${u.overdue ? 'is-late' : ''}"><div class="due-date"><b>${new Date(u.due_date + 'T00:00:00').getDate()}</b><span>${new Date(u.due_date + 'T00:00:00').toLocaleDateString('en-AU', { month: 'short' })}</span></div>
-        <div class="due-main"><b>${esc(u.name)}</b><div class="hint">${when}${u.debt_id ? ' · loan repayment' : ''}</div></div>
-        <div class="due-amt ${isBills ? '' : 'in'}">${money(u.my_amount)}</div>
+        <div class="due-main"><b>${esc(u.name)}</b><div class="hint">${when}${u.debt_id ? ' · loan repayment' : ''}${part}</div></div>
+        <div class="due-amt ${isBills ? '' : 'in'}">${money(upShare(u))}</div>
         ${isBills && d <= 7 ? `<button class="small mark-paid" data-id="${u.item_id}" data-due="${u.due_date}">Paid</button>` : '<span></span>'}</li>`; }).join('')}</ul>
-      <p class="hint total-line">Total ${money(sum(mine, u => u.my_amount))}</p>` : '<p class="empty">Nothing in the next 5 weeks.</p>';
+      <p class="hint total-line">Total ${money(sum(mine, upShare))}</p>` : '<p class="empty">Nothing in the next 5 weeks.</p>';
     $('#r-up').querySelectorAll('.mark-paid').forEach(b => b.onclick = () => markPaid(b.dataset.id, b.dataset.due, () => recurringPage(kind)));
+    hbarChart($('#r-chart'), { items: items.map(i => ({ label: i.name, value: monthly(i),
+        note: shareFor(i.my_share_pct) < 1 ? `${Math.round(shareFor(i.my_share_pct) * 100)}% of ${money(i.amount * PER_MONTH[i.frequency])}` : null }))
+      .sort((x, y) => y.value - x.value), color: isBills ? SERIES.orange : SERIES.blue, empty: `No ${isBills ? 'bills' : 'income'} for ${whoName}.` });
+    if (items.length) $('#r-chart').insertAdjacentHTML('beforeend', `<p class="hint total-line">Total ${money(pm)} per month</p>`);
   };
   let rows = [];
   const drawList = async () => {
     rows = await renderCrud($('#r-list'), kind, {
-      filter: { direction: dir }, title: isBills ? 'All bills' : 'All income',
+      filter: { direction: dir }, title: personView === 'all' ? (isBills ? 'All bills' : 'All income') : `${whoName}'s ${isBills ? 'bills' : 'income'}`,
+      subtitle: personView === 'all' ? '' : `Shared items show ${esc(whoName)}'s part. Change the split with Edit → My share %.`,
+      rowFilter: r => shareFor(r.my_share_pct) > 0,
+      headers: { who_month: personView === 'all' ? 'Per month' : `${whoName} / month` },
       onChange: async () => { await drawTop(); await drawList(); },
       extra: (r, i) => isBills && r.is_active ? `<button class="small b-paid" data-i="${i}">Paid</button>` : '',
     });
@@ -972,19 +1023,22 @@ const income = () => recurringPage('income');
 
 // ---------- DEBTS ----------
 async function debts() {
-  view.innerHTML = `<div class="page-head"><div><h1 class="page-title">Debts</h1><p class="hint">Everything owed, with a log of every call to creditors. Home loan balances update when you import.</p></div></div>
+  view.innerHTML = `<div class="page-head"><div><h1 class="page-title">Debts</h1><div class="who-now inline">${esc(personName())}</div><p class="hint">Everything owed, with a log of every call to creditors. Home loan balances update when you import.</p></div></div>
     <div class="tiles" id="d-sum"></div>
-    <section class="card"><div class="sec-head"><div><h2>Who you owe</h2><p class="hint">Household balances · the long bars are the home loans</p></div></div><div id="d-chart"></div></section>
+    <section class="card"><div class="sec-head"><div><h2>Who you owe</h2><p class="hint">${personView === 'all' ? 'Household balances' : esc(personName()) + "'s share of each balance"} · the long bars are the home loans</p></div></div><div id="d-chart"></div></section>
     <section class="card" id="d-list"></section><section class="card hidden" id="d-log"></section>`;
   const top = async () => {
-    const [d, all] = await Promise.all([q(sb.from('v_debt_summary').select('*').maybeSingle()), q(sb.from('debts').select('*').eq('status', 'active').order('current_balance', { ascending: false }))]);
+    const [d, allRows] = await Promise.all([q(sb.from('v_debt_summary').select('*').maybeSingle()), q(sb.from('debts').select('*').eq('status', 'active').order('current_balance', { ascending: false }))]);
     const sd = d || {};
+    const f = x => shareFor(x.my_share_pct);
+    const all = allRows.filter(x => f(x) > 0);
+    const who = personView === 'all' ? 'household' : personName() + "'s share";
     $('#d-sum').innerHTML = `
-      <div class="tile"><div class="tile-label">Total owed</div><div class="tile-value">${moneyRound(sum(all, x => x.current_balance))}</div><div class="tile-sub">household · your share ${moneyRound(sd.my_total_owed || 0)}</div></div>
-      <div class="tile"><div class="tile-label">Repayments per month</div><div class="tile-value">${moneyRound(sum(all, x => (x.min_payment || 0) * PER_MONTH[x.payment_frequency || 'monthly']))}</div><div class="tile-sub">your share ${moneyRound(sd.my_monthly_minimums || 0)}</div></div>
-      <div class="tile ${Number(sd.my_total_arrears) > 0 ? 'bad' : ''}"><div class="tile-label">Overdue</div><div class="tile-value">${moneyRound(sum(all, x => x.arrears_amount))}</div><div class="tile-sub">entered as arrears</div></div>
+      <div class="tile"><div class="tile-label">Total owed</div><div class="tile-value">${moneyRound(sum(all, x => x.current_balance * f(x)))}</div><div class="tile-sub">${esc(who)}</div></div>
+      <div class="tile"><div class="tile-label">Repayments per month</div><div class="tile-value">${moneyRound(sum(all, x => (x.min_payment || 0) * PER_MONTH[x.payment_frequency || 'monthly'] * f(x)))}</div><div class="tile-sub">${esc(who)}</div></div>
+      <div class="tile ${Number(sd.my_total_arrears) > 0 ? 'bad' : ''}"><div class="tile-label">Overdue</div><div class="tile-value">${moneyRound(sum(all, x => x.arrears_amount * f(x)))}</div><div class="tile-sub">${esc(who)}, entered as arrears</div></div>
       <div class="tile ${sd.on_hardship ? 'good' : ''}"><div class="tile-label">On hardship</div><div class="tile-value">${sd.on_hardship || 0} <small>of ${sd.active_debts || 0}</small></div><div class="tile-sub">${sd.hardship_to_request ? sd.hardship_to_request + ' to request' : 'National Debt Helpline 1800 007 007'}</div></div>`;
-    hbarChart($('#d-chart'), { items: all.map(x => ({ label: x.creditor, value: Number(x.current_balance),
+    hbarChart($('#d-chart'), { items: all.map(x => ({ label: x.creditor, value: Number(x.current_balance) * f(x),
       note: x.current_balance > 0 ? null : 'balance not entered — click Edit below', badge: x.arrears_amount > 0 ? 'overdue' : null, badgeClass: 'bad' })), color: SERIES.orange });
   };
   const showLog = async (debt) => {
@@ -994,7 +1048,9 @@ async function debts() {
   };
   let current = [];
   const list = async () => {
-    current = await renderCrud($('#d-list'), 'debts', { title: 'All debts',
+    current = await renderCrud($('#d-list'), 'debts', { title: personView === 'all' ? 'All debts' : `${personName()}'s debts`,
+      rowFilter: r => shareFor(r.my_share_pct) > 0,
+      subtitle: personView === 'all' ? '' : 'Balances in this list are the full amounts; the tiles and chart above show ' + esc(personName()) + "'s share.",
       onChange: async () => { await top(); await list(); },
       extra: (r, i) => `<button class="small log" data-i="${i}">Calls</button>`,
     });
@@ -1046,7 +1102,9 @@ async function updateSortBadge() {
   const { count } = await sb.from('transactions').select('id', { count: 'exact', head: true }).is('category_id', null);
   const b = $('#sort-badge'); if (b) { b.textContent = count || ''; b.classList.toggle('hidden', !count); }
 }
+let currentView = 'dashboard';
 async function show(name, opts) {
+  currentView = name; renderWhoSwitch();
   document.querySelectorAll('#tabs button').forEach(b => b.classList.toggle('active', b.dataset.view === name));
   history.replaceState(null, '', '#' + name);
   window.scrollTo(0, 0);
@@ -1060,12 +1118,13 @@ async function enter(s) {
   $('#auth').classList.add('hidden'); $('#tabs').classList.remove('hidden'); $('#signout').classList.remove('hidden');
   await q(sb.rpc('seed_defaults'));   // safe every time: only adds what's missing
   await loadLookups();
+  $('#whoswitch').classList.remove('hidden'); renderWhoSwitch();
   const start = location.hash.slice(1);
   show(VIEWS[start] ? start : 'dashboard');
 }
 function leave() {
   session = null; view.innerHTML = '';
-  $('#auth').classList.remove('hidden'); $('#tabs').classList.add('hidden'); $('#signout').classList.add('hidden');
+  $('#auth').classList.remove('hidden'); $('#tabs').classList.add('hidden'); $('#signout').classList.add('hidden'); $('#whoswitch')?.classList.add('hidden');
 }
 $('#authform').onsubmit = async e => {
   e.preventDefault(); const msg = $('#authmsg'); msg.className = 'msg'; msg.textContent = 'Signing in…';
