@@ -51,7 +51,8 @@ Starter categories and ~30 auto-categorising rules are added automatically.
 1. **Import:** choose all your statement files at once (CommBank CSV, Westpac CSV or Account activity PDF).
    New accounts are created automatically with the correct starting balance; rename them in Setup if you like.
    Note: the Westpac app's PDF seems to stop at 100 transactions — for longer history export CSV from Westpac Online Banking.
-2. **Setup → Bank accounts:** check the account names and types (home loans are set as *mortgage*).
+   Tick **Joint / shared account** for the CommBank account — the dashboard then counts only your share of it.
+2. **Setup → Bank accounts:** check the account names and types (home loans are set as *mortgage*) and the share % on joint accounts.
 3. **Transactions → Only uncategorised:** set categories; use **Make rule** for anything that repeats.
 4. **Bills & income:** add Centrelink, mortgage, Synergy, water, insurance, Afterpay, subscriptions.
    Put the text that appears on your statement in *Text on bank statement* so payments are matched.

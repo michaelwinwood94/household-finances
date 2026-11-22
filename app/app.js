@@ -52,9 +52,11 @@ const TABLES = {
       { k: 'nickname_last4', label: 'Last 4 digits (optional)', type: 'text', hint: 'Only the last 4 digits — never the full number' },
       { k: 'opening_balance', label: 'Balance at start date', type: 'number', default: 0 },
       { k: 'opening_date', label: 'Start date', type: 'date', default: today, hint: 'Balance is calculated from this date using imported transactions' },
+      { k: 'is_joint', label: 'Joint / shared account', type: 'checkbox', hint: 'e.g. an account shared with your ex-partner' },
+      { k: 'my_share_pct', label: 'My share % (joint accounts)', type: 'number', default: 100 },
       { k: 'is_active', label: 'Active', type: 'checkbox', default: true },
     ],
-    columns: ['name', 'institution', 'account_type', 'nickname_last4'],
+    columns: ['name', 'institution', 'account_type', 'nickname_last4', 'is_joint', 'my_share_pct'],
   },
   categories: {
     title: 'Categories', order: ['sort_order', 'name'],
@@ -249,7 +251,10 @@ async function dashboard() {
   const { count: uncatCount } = await sb.from('transactions').select('id', { count: 'exact', head: true }).is('category_id', null);
   const isLoan = a => ['loan', 'mortgage', 'credit_card'].includes(a.account_type);
   const accBal = a => Number(a.last_statement_balance ?? a.calculated_balance ?? 0);
-  const totalCash = bal.filter(a => !isLoan(a)).reduce((s, a) => s + accBal(a), 0);
+  const cashAccts = bal.filter(a => !isLoan(a));
+  const totalCash = cashAccts.reduce((s, a) => s + accBal(a) * (a.is_joint ? Number(a.my_share_pct ?? 100) / 100 : 1), 0);
+  const jointAccts = cashAccts.filter(a => a.is_joint);
+  const jointTotal = jointAccts.reduce((s, a) => s + accBal(a), 0);
   const loans = bal.filter(isLoan);
   const totalLoans = loans.reduce((s, a) => s + accBal(a), 0);
   const thisMonth = cash.find(c => c.month === monthStart) || {};
@@ -260,7 +265,7 @@ async function dashboard() {
   view.innerHTML = `
     ${!cache.accounts.length ? `<div class="card"><h2>Welcome</h2><p>Start in <b>Setup</b>: add your bank accounts. Or go straight to <b>Import</b> and choose your CommBank CSV and Westpac PDF/CSV files — accounts are set up for you.</p></div>` : ''}
     <div class="grid">
-      <div class="stat"><div class="label">Money in accounts</div><div class="value">${money(totalCash)}</div><div class="sub">${bal.length - loans.length} everyday/savings account(s)</div></div>
+      <div class="stat"><div class="label">Money in accounts</div><div class="value">${money(totalCash)}</div><div class="sub">${cashAccts.length} everyday/savings account(s)${jointAccts.length ? `<br>Includes your share of joint accounts (joint total ${money(jointTotal)})` : ''}</div></div>
       ${loans.length ? `<div class="stat warn"><div class="label">Loan balances</div><div class="value">${money(Math.abs(totalLoans))}</div><div class="sub">${loans.map(a => esc(a.name)).join(' · ')}</div></div>` : ''}
       <div class="stat ${Number(thisMonth.net) < 0 ? 'bad' : 'good'}"><div class="label">This month so far</div><div class="value">${money(thisMonth.net || 0)}</div><div class="sub">In ${money(thisMonth.money_in || 0)} · Out ${money(thisMonth.money_out || 0)}</div></div>
       <div class="stat ${gap < 0 ? 'bad' : 'good'}"><div class="label">Regular monthly gap</div><div class="value">${money(gap)}</div><div class="sub">Regular income − bills − debt minimums</div></div>
@@ -450,12 +455,14 @@ async function importView() {
               ${p.skipped.length ? `<br><span class="msg error">${p.skipped.length} line(s) skipped</span>` : ''}</td>
             <td><select data-i="${i}" class="j-acct"><option value="new" ${j.accountId === 'new' ? 'selected' : ''}>+ New account</option>
               ${cache.accounts.map(a => `<option value="${a.id}" ${a.id === j.accountId ? 'selected' : ''}>${esc(a.name)}</option>`).join('')}</select>
-              ${j.accountId === 'new' ? `<input class="j-name" data-i="${i}" value="${esc(j.newName)}" aria-label="New account name">` : ''}</td></tr>`;
+              ${j.accountId === 'new' ? `<input class="j-name" data-i="${i}" value="${esc(j.newName)}" aria-label="New account name">
+                <label style="font-weight:400"><input type="checkbox" class="j-joint" data-i="${i}" ${j.joint ? 'checked' : ''}> Joint / shared account</label>` : ''}</td></tr>`;
         }).join('')}</tbody></table></div>
         ${ok.length ? `<details><summary>Preview first rows</summary>${ok.map(j => `<h3>${esc(j.file.name)}</h3><div class="tablewrap"><table><tbody>${j.parsed.rows.slice(0, 5).map(r => `<tr><td>${esc(fmtDate(r.date))}</td><td>${esc(r.description)}</td><td class="num ${r.amount > 0 ? 'in' : ''}">${money(r.amount)}</td></tr>`).join('')}</tbody></table></div>`).join('')}</details>
         <div class="row" style="margin-top:1rem"><button class="primary" id="i-go">Import ${ok.reduce((s, j) => s + j.parsed.rows.length, 0)} transactions from ${ok.length} file(s)</button></div>` : ''}`;
       pv.querySelectorAll('.j-acct').forEach(s => s.onchange = () => { jobs[s.dataset.i].accountId = s.value; draw(); });
       pv.querySelectorAll('.j-name').forEach(inp => inp.oninput = () => { jobs[inp.dataset.i].newName = inp.value; });
+      pv.querySelectorAll('.j-joint').forEach(c => c.onchange = () => { jobs[c.dataset.i].joint = c.checked; });
       $('#i-go')?.addEventListener('click', run);
     }
 
@@ -469,7 +476,8 @@ async function importView() {
           const name = (j.newName || '').trim() || 'New account';
           const open = openingFor(p);
           const created = await q(sb.from('accounts').insert({ name, institution: guessInstitution(p, j.file.name), account_type: guessType(name),
-            nickname_last4: p.account?.last4 || null, opening_balance: open.balance, opening_date: open.date }).select().single());
+            nickname_last4: p.account?.last4 || null, opening_balance: open.balance, opening_date: open.date,
+            is_joint: !!j.joint, my_share_pct: j.joint ? Number(cache.settings?.default_my_share_pct ?? 50) : 100 }).select().single());
           accountId = created.id; await loadLookups();
           jobs.filter(o => o !== j && o.accountId === 'new' && o.newName === j.newName).forEach(o => o.accountId = accountId);
         }
