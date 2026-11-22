@@ -1,7 +1,7 @@
 import { createClient } from 'https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2/+esm';
-import { SUPABASE_URL, SUPABASE_PUBLISHABLE_KEY } from './config.js';
-import { parseBankCsv, parseWestpacActivity, splitAccounts } from './csv.js';
-import { columnChart, hbarChart, SERIES, moneyRound, moneyCompact } from './charts.js';
+import { SUPABASE_URL, SUPABASE_PUBLISHABLE_KEY } from './config.js?v=202611222359';
+import { parseBankCsv, parseWestpacActivity, splitAccounts } from './csv.js?v=202611222359';
+import { columnChart, hbarChart, SERIES, moneyRound, moneyCompact } from './charts.js?v=202611222359';
 
 const sb = createClient(SUPABASE_URL, SUPABASE_PUBLISHABLE_KEY);
 const $ = (s, el = document) => el.querySelector(s);
