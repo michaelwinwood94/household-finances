@@ -5,7 +5,9 @@
 
 const esc = v => String(v ?? '').replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
 
-export const SERIES = { blue: '#2a78d6', orange: '#eb6834' }; // validated pair (light surface)
+// Validated pairs: light surface #2a78d6/#eb6834, dark surface #3987e5/#d95926 (dataviz validator, both PASS)
+const isDark = () => document.documentElement.dataset.theme === 'dark';
+export const SERIES = { get blue() { return isDark() ? '#3987e5' : '#2a78d6'; }, get orange() { return isDark() ? '#d95926' : '#eb6834'; } };
 
 const AUD0 = new Intl.NumberFormat('en-AU', { style: 'currency', currency: 'AUD', maximumFractionDigits: 0 });
 export const moneyRound = n => AUD0.format(Math.round(Number(n) || 0));

@@ -1,8 +1,9 @@
 import { createClient } from 'https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2/+esm';
-import { SUPABASE_URL, SUPABASE_PUBLISHABLE_KEY } from './config.js?v=202611230045';
-import { parseBankCsv, parseWestpacActivity, splitAccounts, linesFromItems } from './csv.js?v=202611230045';
-import { readPayslip, toLines } from './payslip.js?v=202611230045';
-import { columnChart, hbarChart, SERIES, moneyRound, moneyCompact } from './charts.js?v=202611230045';
+import { SUPABASE_URL, SUPABASE_PUBLISHABLE_KEY } from './config.js?v=202611230055';
+import { parseBankCsv, parseWestpacActivity, splitAccounts, linesFromItems } from './csv.js?v=202611230055';
+import { readPayslip, toLines } from './payslip.js?v=202611230055';
+import { toast, softDelete, busy, friendlyError, watchOnline, info, wireInfoTips, skeleton, wireInstall, applyPrefs, settingsMenu, prefs, setPref, store } from './ui.js?v=202611230055';
+import { columnChart, hbarChart, SERIES, moneyRound, moneyCompact } from './charts.js?v=202611230055';
 
 const sb = createClient(SUPABASE_URL, SUPABASE_PUBLISHABLE_KEY);
 const $ = (s, el = document) => el.querySelector(s);
@@ -15,10 +16,9 @@ const money = n => n == null || n === '' ? '—' : AUD.format(Number(n));
 const today = () => new Date().toLocaleDateString('en-CA'); // yyyy-mm-dd in local time
 const fmtDate = d => d ? new Date(d + 'T00:00:00').toLocaleDateString('en-AU', { day: 'numeric', month: 'short', year: 'numeric' }) : '—';
 const daysFromToday = d => Math.round((new Date(d + 'T00:00:00') - new Date(today() + 'T00:00:00')) / 86400000);
-function toast(msg, ms = 3000) { const t = $('#toast'); t.textContent = msg; t.classList.add('show'); clearTimeout(t._h); t._h = setTimeout(() => t.classList.remove('show'), ms); }
 async function q(promise) {
   const { data, error } = await promise;
-  if (error) { console.error(error); toast('Problem: ' + error.message, 6000); throw error; }
+  if (error) { console.error(error); toast(friendlyError(error), { ms: 7000, kind: 'bad' }); throw error; }
   return data;
 }
 const label = (s) => String(s ?? '').replace(/_/g, ' ').replace(/^\w/, c => c.toUpperCase());
@@ -250,6 +250,17 @@ function renderWhoSwitch() {
   });
 }
 const shareFor = (pct, who = personView) => { const m = Number(pct ?? 100) / 100; return who === 'me' ? m : who === 'partner' ? 1 - m : 1; };
+const EMPTY = {
+  accounts: 'No bank accounts yet. The easiest way is to <b>Import</b> a statement — accounts are created for you.',
+  categories: 'No categories yet.', category_rules: 'No rules yet. Use <b>Make rule</b> on the Transactions or To sort page to create one from a real transaction.',
+  bills: 'No bills yet. Add regular payments like power, insurance and loan repayments — or import statements and they’re found for you.',
+  income: 'No income yet. Add JobSeeker, wages or board so the Budget can work out what’s left over.',
+  debts: 'No debts recorded. Add each one — even small ones — so nothing gets forgotten.',
+  debt_contacts: 'No calls logged yet. After every call or letter, add who you spoke to and what was agreed.',
+  shared_ledger: 'No shared costs yet. Tick "Shared" on a transaction, or add one here.',
+  tax_extras: 'Nothing extra yet.',
+};
+setTimeout(() => { for (const [k, v] of Object.entries(EMPTY)) if (TABLES[k]) TABLES[k].empty = v; });
 const VIRTUAL = {
   who_month: { label: 'Per month', num: true, html: r => r.debt_id && r.direction === 'out' && personView === 'all' ? `${money(r.amount * PER_MONTH[r.frequency])}<div class="hint">in Debts</div>`
     : money(r.amount * PER_MONTH[r.frequency] * shareFor(r.my_share_pct)) },
@@ -352,9 +363,11 @@ function openForm(key, row = null, fixed = {}) {
         if (f.k === 'priority' && out[f.k] != null) out[f.k] = Number(out[f.k]);
       }
       try {
-        if (row) await q(sb.from(table).update(out).eq('id', row.id));
-        else await q(sb.from(table).insert(out));
-        toast('Saved'); dlg.close(); dlg.remove(); resolve(true);
+        await busy(e.submitter, async () => {
+          if (row) await q(sb.from(table).update(out).eq('id', row.id));
+          else await q(sb.from(table).insert(out));
+        });
+        toast('Saved ✓'); dlg.close(); dlg.remove(); resolve(true);
       } catch { /* toast already shown; keep dialog open */ }
     });
     dlg.addEventListener('close', () => { dlg.remove(); resolve(false); });
@@ -379,26 +392,79 @@ async function renderCrud(container, key, { filter = {}, title, onChange, extra,
   container.innerHTML = `<div class="sec-head"><div><h2>${esc(title || def.title)}</h2>${subtitle ? `<p class="hint">${subtitle}</p>` : ''}</div>
       <button class="primary add">+ Add</button></div>
     ${rows.length ? `<div class="tablewrap"><table class="list"><thead><tr>${def.columns.map(k => `<th class="${isNum(k) ? 'num' : ''}">${esc(headers?.[k] || def.headers?.[k] || VIRTUAL[k]?.label || def.fields.find(f => f.k === k)?.label || label(k))}</th>`).join('')}<th></th></tr></thead>
-      <tbody>${rows.map((r, i) => `<tr class="${r.is_active === false ? 'muted' : ''}">${def.columns.map(k => `<td class="${isNum(k) ? 'num' : ''}">${cell(def, r, k)}</td>`).join('')}
+      <tbody>${rows.map((r, i) => `<tr class="${r.is_active === false ? 'muted' : ''}">${def.columns.map(k => `<td class="${isNum(k) ? 'num' : ''}" data-label="${esc(headers?.[k] || def.headers?.[k] || VIRTUAL[k]?.label || def.fields.find(f => f.k === k)?.label || label(k))}">${cell(def, r, k)}</td>`).join('')}
         <td class="actions">${extra ? extra(r, i) : ''}<button class="small edit" data-i="${i}">Edit</button><button class="small ghost del" data-i="${i}" title="Delete" aria-label="Delete">✕</button></td></tr>`).join('')}</tbody>
       ${footerHtml(def, rows)}</table></div>`
-      : `<p class="empty">Nothing here yet.</p>`}`;
+      : `<div class="empty-state">${def.empty || 'Nothing here yet.'}<br><button class="primary small add2">+ Add the first one</button></div>`}`;
   const changed = async () => { await loadLookups(); onChange ? await onChange() : await renderCrud(container, key, { filter, title, onChange, extra, subtitle, rowFilter, headers }); };
   $('.add', container).onclick = async () => { if (await openForm(key, null, filter)) await changed(); };
+  $('.add2', container)?.addEventListener('click', async () => { if (await openForm(key, null, filter)) await changed(); });
   container.querySelectorAll('.edit').forEach(b => b.onclick = async () => { if (await openForm(key, rows[b.dataset.i], filter)) await changed(); });
-  container.querySelectorAll('.del').forEach(b => b.onclick = async () => {
-    if (!confirm('Delete this entry? This cannot be undone.')) return;
-    await q(sb.from(def.table || key).delete().eq('id', rows[b.dataset.i].id)); toast('Deleted'); await changed();
+  container.querySelectorAll('.del').forEach(b => b.onclick = () => {
+    const tr = b.closest('tr'), row = rows[b.dataset.i];
+    softDelete({ label: `Deleted "${row.name || row.creditor || row.description || row.match_text || 'entry'}"`,
+      hide: () => tr.classList.add('hidden'), restore: () => tr.classList.remove('hidden'),
+      commit: async () => { await q(sb.from(def.table || key).delete().eq('id', row.id)); await changed(); } });
   });
   return rows;
 }
 
 async function markPaid(itemId, due, after) {
-  if (!confirm(`Mark this as paid? The due date (${fmtDate(due)}) moves on to the next one.`)) return;
   const next = await q(sb.rpc('mark_item_paid', { p_item_id: itemId }));
   // clear any alert about this due date
   await sb.from('alerts').update({ dismissed: true }).like('source_key', `%${itemId}:${due}`);
-  toast(next ? `Marked paid — next due ${fmtDate(next)}` : 'Marked paid'); await after();
+  toast(next ? `Marked paid — next due ${fmtDate(next)}` : 'Marked paid', { ms: 7000, action: 'Undo', onAction: async () => {
+    await q(sb.from('recurring_items').update({ next_due: due, is_active: true }).eq('id', itemId));
+    await sb.from('alerts').update({ dismissed: false }).like('source_key', `%${itemId}:${due}`);
+    toast('Undone — still due ' + fmtDate(due)); await after();
+  } });
+  await after();
+}
+
+// ---------- WEEKLY CHECK (guided routine) ----------
+async function weeklyCheck(step = store.get('weeklyStep', 0)) {
+  document.querySelector('dialog.weekly')?.remove();
+  const dlg = document.createElement('dialog'); dlg.className = 'weekly';
+  const STEPS = ['Bring in new statements', 'Sort new transactions', 'Tick off paid bills', 'Check alerts', 'All done'];
+  store.set('weeklyStep', step);
+  const [bal, uncat, up, alerts] = await Promise.all([
+    q(sb.from('v_account_balances').select('name, last_transaction_date, is_active').eq('is_active', true)),
+    sb.from('transactions').select('id', { count: 'exact', head: true }).is('category_id', null).gte('txn_date', new Date(Date.now() - 60 * 864e5).toLocaleDateString('en-CA')),
+    q(sb.rpc('upcoming_items', { p_days: 7 })),
+    q(sb.from('alerts').select('*').eq('dismissed', false)),
+  ]);
+  const body = [
+    () => `<p>Download the latest CSV or PDF from <b>Westpac</b> and <b>CommBank</b>, then import them. Already-imported transactions are skipped automatically.</p>
+      <ul class="checklist">${bal.map(a => { const d = a.last_transaction_date ? -daysFromToday(a.last_transaction_date) : null;
+        return `<li class="${d != null && d <= 7 ? 'done' : ''}"><span class="tick">${d != null && d <= 7 ? '✓' : ''}</span><div class="what">${esc(a.name)}</div><span class="hint">${d == null ? 'no data' : d <= 0 ? 'up to date' : d + ' days old'}</span></li>`; }).join('')}</ul>
+      <button data-go="import">Open Import</button> <span class="hint">Come back with ✓ Weekly check on Home.</span>`,
+    () => `<p><b>${uncat.count || 0}</b> transaction${uncat.count === 1 ? '' : 's'} from the last two months ${uncat.count === 1 ? 'needs' : 'need'} a category.</p>
+      ${uncat.count ? '<button data-go="sort">Open To sort</button>' : '<p class="callout good">Nothing to sort ✓</p>'}`,
+    () => { const due = up.filter(u => u.direction === 'out');
+      return due.length ? `<p>Bills due this week or overdue — press <b>Paid</b> on each one that's been paid:</p>
+        <ul class="due-list">${due.map(u => `<li class="${u.overdue ? 'is-late' : ''}"><div class="due-date"><b>${new Date(u.due_date + 'T00:00:00').getDate()}</b><span>${new Date(u.due_date + 'T00:00:00').toLocaleDateString('en-AU', { month: 'short' })}</span></div>
+          <div class="due-main"><b>${esc(u.name)}</b><div class="hint">${u.overdue ? 'overdue' : 'due ' + fmtDate(u.due_date)}</div></div><div class="due-amt">${money(u.amount)}</div>
+          <button class="small w-paid" data-id="${u.item_id}" data-due="${u.due_date}">Paid</button></li>`).join('')}</ul>` : '<p class="callout good">No bills due this week ✓</p>'; },
+    () => alerts.length ? `<p>Read each alert and dismiss the ones that are dealt with:</p>${alerts.map(a => `<div class="alert ${a.severity}"><span class="alert-icon">${a.severity === 'urgent' ? '!' : '•'}</span><div><b>${esc(a.title)}</b><div class="hint">${esc(a.body)}</div></div>
+      <button class="small ghost w-dismiss" data-id="${a.id}" aria-label="Dismiss">✕</button></div>`).join('')}` : '<p class="callout good">No alerts ✓</p>',
+    () => `<p class="callout good"><b>Weekly check done.</b> Your figures are up to date.</p><p>Next check: <b>${new Date(Date.now() + 7 * 864e5).toLocaleDateString('en-AU', { weekday: 'long', day: 'numeric', month: 'long' })}</b>.</p>`,
+  ];
+  dlg.innerHTML = `<h2>Weekly check — ${esc(STEPS[step])}</h2><div class="steps" aria-hidden="true">${STEPS.map((_, i) => `<span class="${i <= step ? 'on' : ''}"></span>`).join('')}</div>
+    <p class="hint">Step ${step + 1} of ${STEPS.length}</p><div class="w-body">${body[step]()}</div>
+    <div class="row" style="margin-top:1rem;justify-content:space-between"><button class="ghost w-close">Close</button>
+      <div class="row">${step > 0 && step < 4 ? '<button class="w-back">Back</button>' : ''}<button class="primary w-next">${step === 4 ? 'Finish' : 'Next'}</button></div></div>`;
+  document.body.appendChild(dlg); dlg.showModal();
+  dlg.querySelector('.w-close').onclick = () => dlg.close();
+  dlg.querySelector('.w-back')?.addEventListener('click', () => { dlg.remove(); weeklyCheck(step - 1); });
+  dlg.querySelector('.w-next').onclick = () => {
+    dlg.remove();
+    if (step === 4) { store.set('lastWeekly', today()); store.set('weeklyStep', 0); toast('Weekly check done ✓'); if (currentView === 'dashboard') dashboard(); }
+    else weeklyCheck(step + 1);
+  };
+  dlg.querySelectorAll('[data-go]').forEach(b => b.onclick = () => { dlg.close(); show(b.dataset.go); });
+  dlg.querySelectorAll('.w-paid').forEach(b => b.onclick = () => busy(b, () => markPaid(b.dataset.id, b.dataset.due, async () => { if (!b.isConnected) return; b.closest('li').classList.add('done'); b.replaceWith(Object.assign(document.createElement('span'), { className: 'hint', textContent: 'paid ✓' })); })));
+  dlg.querySelectorAll('.w-dismiss').forEach(b => b.onclick = async () => { await q(sb.from('alerts').update({ dismissed: true }).eq('id', b.dataset.id)); b.closest('.alert').remove(); });
+  dlg.addEventListener('close', () => dlg.remove());
 }
 
 // ---------- DASHBOARD ----------
@@ -420,6 +486,15 @@ async function dashboard() {
     q(sb.from('transactions').select('txn_date').order('txn_date', { ascending: false }).limit(1)),
     q(sb.from('debts').select('current_balance, my_share_pct, arrears_amount').eq('status', 'active')),
   ]);
+  const lastMonthStart = new Date(new Date().getFullYear(), new Date().getMonth() - 1, 1).toLocaleDateString('en-CA');
+  const [recent, debtsAll, items, taxRow, contacts, imports] = await Promise.all([
+    q(sb.from('transactions').select('account_id, amount, txn_date, category_id').gte('txn_date', lastMonthStart).range(0, 4999)),
+    q(sb.from('debts').select('debt_type, current_balance, hardship_status, status').eq('status', 'active')),
+    q(sb.from('recurring_items').select('id', { count: 'exact', head: false }).limit(1)),
+    q(sb.from('tax_years').select('rooms').eq('fy', fyOf(today())).maybeSingle()),
+    q(sb.from('debt_contacts').select('id, method').limit(50)),
+    q(sb.from('import_batches').select('created_at').order('created_at', { ascending: false }).limit(1)),
+  ]);
   const alerts = alertsRaw.sort((a, b) => rank[a.severity] - rank[b.severity]);
   const uncatCount = uncat.count || 0;
   const name = cache.settings?.display_name;
@@ -432,6 +507,34 @@ async function dashboard() {
   upcoming = upcoming.filter(u => upShare(u) > 0.004).map(u => ({ ...u, my_amount: upShare(u) }));
   const spendShare = shareFor(cache.settings?.default_my_share_pct ?? 50);
   const thisMonth = cash.find(c => c.month === monthStart) || {};
+  // comparisons
+  const transferIds = new Set(cache.categories.filter(c => c.kind === 'transfer').map(c => c.id));
+  const d30 = new Date(Date.now() - 30 * 864e5).toLocaleDateString('en-CA');
+  const cashIds = new Map(cashAccts.map(a => [a.id, a]));
+  const change30 = sum(recent.filter(t => t.txn_date > d30 && cashIds.has(t.account_id)), t => Number(t.amount) * (personView === 'all' ? 1 : cashIds.get(t.account_id).is_joint ? shareFor(cashIds.get(t.account_id).my_share_pct) : personView === 'me' ? 1 : 0));
+  const dayOfMonth = +today().slice(8, 10);
+  const lastSame = recent.filter(t => t.txn_date >= lastMonthStart && t.txn_date < monthStart && +t.txn_date.slice(8, 10) <= dayOfMonth && !transferIds.has(t.category_id));
+  const lastNet = sum(lastSame, t => t.amount);
+  const deltaHtml = (v, goodUp = true, suffix = '') => !v || Math.abs(v) < 1 ? '' : `<span class="delta ${(v > 0) === goodUp ? 'up' : 'down'}">${v > 0 ? '▲' : '▼'} ${moneyRound(Math.abs(v))}${suffix}</span>`;
+  // freshness of bank data per account
+  const fresh = bal.filter(a => a.last_transaction_date).map(a => ({ name: a.name, days: daysFromToday(a.last_transaction_date) * -1, date: a.last_transaction_date }));
+  const staleAccts = fresh.filter(f => f.days > 7);
+  // setup checklist
+  const lastWeekly = store.get('lastWeekly', null);
+  const uncat90 = recent.filter(t => !t.category_id).length;
+  const bnplMissing = debtsAll.filter(d => ['bnpl', 'personal_loan'].includes(d.debt_type) && !Number(d.current_balance));
+  const checklist = [
+    { done: bal.some(a => a.transaction_count > 0), what: 'Import your bank statements', go: 'import' },
+    { done: fresh.length && !staleAccts.length, what: 'Keep bank data less than a week old', go: 'import', hint: staleAccts.length ? staleAccts.map(f => `${f.name} (${f.days} days)`).join(', ') : '' },
+    { done: uncat90 < 10, what: 'Sort recent transactions', go: 'sort', hint: uncat90 ? `${uncat90} from the last two months still to sort` : '' },
+    { done: !bnplMissing.length, what: 'Enter what you still owe on Afterpay, Deferit and Latitude', go: 'debts', hint: bnplMissing.length ? `${bnplMissing.length} balance${bnplMissing.length > 1 ? 's' : ''} missing` : '' },
+    { done: (items || []).length > 0 && store.get('visitedBills', false), what: 'Check the bills and income list (amounts and splits)', go: 'bills' },
+    { done: debtsAll.some(d => ['requested', 'approved'].includes(d.hardship_status)) || contacts.some(c => c.method === 'counsellor'), what: 'Call the National Debt Helpline (1800 007 007) about hardship', go: 'debts', hint: 'Log the call under Debts → Calls' },
+    { done: !!(taxRow?.rooms || []).length, what: 'Set up the boarders\' rooms for tax', go: 'tax' },
+    { done: !!lastWeekly, what: 'Do your first weekly check', go: 'weekly' },
+  ];
+  const doneCount = checklist.filter(c => c.done).length;
+  const showChecklist = doneCount < checklist.length && !store.get('hideChecklist', false);
   const dueOut = upcoming.filter(u => u.direction === 'out');
   const dueTotal = sum(dueOut, u => u.my_amount);
   const overdue = dueOut.filter(u => u.overdue);
@@ -441,7 +544,16 @@ async function dashboard() {
 
   view.innerHTML = `
     <div class="page-head"><div><h1 class="page-title">${greet}${name ? ', ' + esc(name) : ''}</h1>${personView !== 'all' ? `<div class="who-now inline">Showing ${esc(personName())}</div>` : ''}
-      <p class="hint">${lastTxn[0] ? `Bank data up to ${esc(fmtDate(lastTxn[0].txn_date))} · <button class="link" data-go="import">import newer statements</button>` : 'No statements imported yet — <button class="link" data-go="import">import your first</button>'}</p></div></div>
+      <p class="hint">${lastTxn[0] ? `Bank data up to ${esc(fmtDate(lastTxn[0].txn_date))} · <button class="link" data-go="import">import newer statements</button>` : 'No statements imported yet — <button class="link" data-go="import">import your first</button>'}</p></div>
+      <div class="row"><button class="primary" id="weekly-btn">✓ Weekly check</button><span class="hint">${lastWeekly ? `last done ${-daysFromToday(lastWeekly) === 0 ? 'today' : -daysFromToday(lastWeekly) + ' days ago'}` : 'about 5 minutes'}</span></div></div>
+
+    ${showChecklist ? `<section class="card"><div class="sec-head"><div><h2>Getting set up</h2><p class="hint">${doneCount} of ${checklist.length} done</p></div><button class="small ghost" id="hide-check" title="Hide checklist">Hide</button></div>
+      <div class="progress" role="progressbar" aria-valuenow="${doneCount}" aria-valuemin="0" aria-valuemax="${checklist.length}"><span style="width:${doneCount / checklist.length * 100}%"></span></div>
+      <ul class="checklist">${checklist.map(c => `<li class="${c.done ? 'done' : ''}"><span class="tick" aria-hidden="true">${c.done ? '✓' : ''}</span>
+        <div><span class="what">${esc(c.what)}</span>${c.hint && !c.done ? `<div class="hint">${esc(c.hint)}</div>` : ''}</div>
+        ${c.done ? '<span class="hint">done</span>' : `<button class="small" data-go="${c.go}">${c.go === 'weekly' ? 'Start' : 'Go'}</button>`}</li>`).join('')}</ul></section>` : ''}
+
+    ${fresh.length ? `<div class="chips" aria-label="How up to date your bank data is">${fresh.map(f => `<button class="chip" data-go="import" title="Latest transaction ${esc(fmtDate(f.date))}"><span class="fresh"><span class="fresh-dot ${f.days > 14 ? 'stale' : f.days > 7 ? 'old' : ''}"></span>${esc(f.name.replace(/Rocket Repay /, ''))}: ${f.days <= 0 ? 'up to date' : f.days + ' day' + (f.days === 1 ? '' : 's') + ' old'}</span></button>`).join('')}</div>` : ''}
 
     ${alerts.length ? `<div class="alerts">${alerts.slice(0, 4).map((a, i) => `<div class="alert ${a.severity}">
         <span class="alert-icon" aria-hidden="true">${a.severity === 'urgent' ? '!' : a.severity === 'warning' ? '•' : 'i'}</span>
@@ -450,13 +562,13 @@ async function dashboard() {
       ${alerts.length > 4 ? `<p class="hint">+ ${alerts.length - 4} more alert(s)</p>` : ''}</div>` : ''}
 
     <div class="tiles">
-      <div class="tile"><div class="tile-label">Money in accounts</div><div class="tile-value">${moneyRound(myCash)}</div>
-        <div class="tile-sub">${esc(pName)}${personView === 'all' ? '' : ' share'}, ${cashAccts.length} account${cashAccts.length === 1 ? '' : 's'}</div></div>
-      <div class="tile ${Number(thisMonth.net) < 0 ? 'bad' : 'good'}"><div class="tile-label">This month so far <span class="hint">(household)</span></div><div class="tile-value">${Number(thisMonth.net) >= 0 ? '+' : ''}${moneyRound(thisMonth.net || 0)}</div>
-        <div class="tile-sub">in ${moneyRound(thisMonth.money_in || 0)} · out ${moneyRound(thisMonth.money_out || 0)}</div></div>
-      <div class="tile ${overdue.length ? 'bad' : dueOut.length ? 'warn' : ''}"><div class="tile-label">Bills due in 14 days</div><div class="tile-value">${moneyRound(dueTotal)}</div>
+      <div class="tile"><div class="tile-label">Money in accounts ${info('The balance of your everyday and savings accounts (not loans), worked out from your imported statements. Joint accounts count only your share when Michael or Taslyn is selected. The arrow compares with 30 days ago.')}</div><div class="tile-value">${moneyRound(myCash)}</div>
+        <div class="tile-sub">${deltaHtml(change30, true, ' in 30 days')} ${esc(pName)}${personView === 'all' ? '' : ' share'}, ${cashAccts.length} account${cashAccts.length === 1 ? '' : 's'}</div></div>
+      <div class="tile ${Number(thisMonth.net) < 0 ? 'bad' : 'good'}"><div class="tile-label">This month so far <span class="hint">(household)</span> ${info('Money in minus money out since the 1st of this month, for the whole household. Transfers between your own accounts, money between you and Taslyn, and loan interest are left out. The arrow compares with the same days last month.')}</div><div class="tile-value">${Number(thisMonth.net) >= 0 ? '+' : ''}${moneyRound(thisMonth.net || 0)}</div>
+        <div class="tile-sub">${deltaHtml(Number(thisMonth.net || 0) - lastNet, true, ' vs last month')} in ${moneyRound(thisMonth.money_in || 0)} · out ${moneyRound(thisMonth.money_out || 0)}</div></div>
+      <div class="tile ${overdue.length ? 'bad' : dueOut.length ? 'warn' : ''}"><div class="tile-label">Bills due in 14 days ${info('Regular bills and loan repayments due in the next two weeks, plus any that are overdue. Shared bills count only the selected person\'s share. Press Paid on a bill once it\'s paid.')}</div><div class="tile-value">${moneyRound(dueTotal)}</div>
         <div class="tile-sub">${dueOut.length} bill${dueOut.length === 1 ? '' : 's'}, ${esc(pName)}${overdue.length ? ` · <b>${overdue.length} overdue</b>` : ''}</div></div>
-      <div class="tile"><div class="tile-label">Debt</div><div class="tile-value">${moneyCompact(sum(debtRows, x => x.current_balance * shareFor(x.my_share_pct)))}</div>
+      <div class="tile"><div class="tile-label">Debt ${info('Everything owed: home loans (updated from your statements), power, Afterpay and other debts you entered. Shared debts count only the selected person\'s share.')}</div><div class="tile-value">${moneyCompact(sum(debtRows, x => x.current_balance * shareFor(x.my_share_pct)))}</div>
         <div class="tile-sub">${esc(pName)}${sum(debtRows, x => x.arrears_amount * shareFor(x.my_share_pct)) ? ` · overdue ${moneyRound(sum(debtRows, x => x.arrears_amount * shareFor(x.my_share_pct)))}` : ''}</div></div>
     </div>
 
@@ -515,7 +627,9 @@ async function dashboard() {
 
   // interactions
   view.querySelectorAll('[data-period]').forEach(b => b.onclick = () => { spendPeriod = b.dataset.period; view.querySelectorAll('[data-period]').forEach(x => x.classList.toggle('on', x === b)); drawSpend(); });
-  view.querySelectorAll('[data-go]').forEach(b => b.onclick = () => show(b.dataset.go));
+  view.querySelectorAll('[data-go]').forEach(b => b.onclick = () => b.dataset.go === 'weekly' ? weeklyCheck() : show(b.dataset.go));
+  $('#weekly-btn').onclick = () => weeklyCheck();
+  $('#hide-check')?.addEventListener('click', () => { store.set('hideChecklist', true); $('#hide-check').closest('.card').remove(); toast('Checklist hidden', { action: 'Undo', onAction: () => { store.set('hideChecklist', false); dashboard(); } }); });
   view.querySelectorAll('.mark-paid').forEach(b => b.onclick = () => markPaid(b.dataset.id, b.dataset.due, dashboard));
   view.querySelectorAll('.dismiss').forEach(b => b.onclick = async () => {
     await q(sb.from('alerts').update({ dismissed: true }).eq('id', alerts[b.dataset.i].id));
@@ -544,10 +658,10 @@ async function budget() {
         <div class="who-now">${esc(names[budgetWho])}</div></div>
 
       <div class="tiles">
-        <div class="tile"><div class="tile-label">Regular income</div><div class="tile-value">${moneyRound(p.regular_in)}</div><div class="tile-sub">per month</div></div>
-        <div class="tile"><div class="tile-label">Regular costs</div><div class="tile-value">${moneyRound(costs)}</div><div class="tile-sub">bills ${moneyRound(p.regular_out)} · debts ${moneyRound(p.debt_monthly)}</div></div>
-        <div class="tile ${gap < 0 ? 'bad' : 'good'}"><div class="tile-label">Left over each month</div><div class="tile-value">${gap >= 0 ? '+' : ''}${moneyRound(gap)}</div><div class="tile-sub">${gap < 0 ? 'short before everyday spending' : 'before everyday spending'}</div></div>
-        <div class="tile ${actualGap < 0 ? 'bad' : 'good'}"><div class="tile-label">What actually happened</div><div class="tile-value">${actualGap >= 0 ? '+' : ''}${moneyRound(actualGap)}</div><div class="tile-sub">average per month, last ${months} months</div></div>
+        <div class="tile"><div class="tile-label">Regular income ${info('All regular income from the Income page, converted to a monthly amount (weekly × 52 ÷ 12, fortnightly × 26 ÷ 12). Shared items count only the selected person\'s share.')}</div><div class="tile-value">${moneyRound(p.regular_in)}</div><div class="tile-sub">per month</div></div>
+        <div class="tile"><div class="tile-label">Regular costs ${info('Regular bills from the Bills page plus debt repayments from the Debts page, per month. Loan repayments are counted once, under debts.')}</div><div class="tile-value">${moneyRound(costs)}</div><div class="tile-sub">bills ${moneyRound(p.regular_out)} · debts ${moneyRound(p.debt_monthly)}</div></div>
+        <div class="tile ${gap < 0 ? 'bad' : 'good'}"><div class="tile-label">Left over each month ${info('Regular income minus regular costs. This is what\'s left for food, fuel and everything else — before any everyday spending.')}</div><div class="tile-value">${gap >= 0 ? '+' : ''}${moneyRound(gap)}</div><div class="tile-sub">${gap < 0 ? 'short before everyday spending' : 'before everyday spending'}</div></div>
+        <div class="tile ${actualGap < 0 ? 'bad' : 'good'}"><div class="tile-label">What actually happened ${info('From your real bank transactions: average money in minus money out per month over the last 6 months. Transfers and loan interest aren\'t counted.')}</div><div class="tile-value">${actualGap >= 0 ? '+' : ''}${moneyRound(actualGap)}</div><div class="tile-sub">average per month, last ${months} months</div></div>
       </div>
 
       <div class="grid2">
@@ -582,7 +696,7 @@ async function budget() {
 // ---------- TRANSACTIONS ----------
 async function transactions(opts = {}) {
   const thisMonth = today().slice(0, 7);
-  const state = { months: new Set(opts.uncategorised ? [] : [thisMonth]), account: '', category: '', uncategorised: !!opts.uncategorised, search: '' };
+  const state = { months: new Set(opts.uncategorised || opts.search || opts.category ? [] : [thisMonth]), account: '', category: opts.category || '', uncategorised: !!opts.uncategorised, search: opts.search || '' };
   // every month from the oldest transaction to now, newest first
   const oldest = (await q(sb.from('transactions').select('txn_date').order('txn_date').limit(1)))[0]?.txn_date || today();
   const monthList = [];
@@ -600,8 +714,8 @@ async function transactions(opts = {}) {
               return head + `<label class="mcheck"><input type="checkbox" value="${m}" ${state.months.has(m) ? 'checked' : ''}> ${esc(mLabel(m))}</label>`; }).join(''); })()}
           </div></details></div>
       <label>Account <select id="f-acct"><option value="">All accounts</option>${cache.accounts.map(a => `<option value="${a.id}">${esc(a.name)}</option>`).join('')}</select></label>
-      <label>Category <select id="f-cat"><option value="">All categories</option>${cache.categories.map(c => `<option value="${c.id}">${esc(c.name)}</option>`).join('')}</select></label>
-      <label>Search <input type="search" id="f-search" placeholder="e.g. woolworths"></label>
+      <label>Category <select id="f-cat"><option value="">All categories</option>${cache.categories.map(c => `<option value="${c.id}" ${c.id === state.category ? 'selected' : ''}>${esc(c.name)}</option>`).join('')}</select></label>
+      <label>Search <input type="search" id="f-search" placeholder="e.g. woolworths" value="${esc(state.search)}"></label>
       <label style="align-self:end"><input type="checkbox" id="f-uncat" ${state.uncategorised ? 'checked' : ''}> Only uncategorised</label>
       <label style="align-self:end"><input type="checkbox" id="f-oneoff"> Only one-offs</label>
       <div class="row" style="align-self:end;margin-bottom:.6rem"><button type="button" id="f-all">All months</button><button type="button" id="f-clear">Clear filters</button></div>
@@ -638,18 +752,21 @@ async function transactions(opts = {}) {
       <td class="num"><b>${money(tIn - tOut)}</b></td><td colspan="4"></td></tr></tfoot>`;
     const box = $('#txlist');
     box.innerHTML = rows.length ? `<p>${all.length} transaction(s) · in ${money(tIn)} · out ${money(tOut)} · net <b>${money(tIn - tOut)}</b>${all.length > 500 ? ' — totals cover all of them; the list shows the newest 500' : ''}</p>
-      <div class="tablewrap"><table><thead><tr><th>Date</th><th>Description</th><th class="num">Amount</th><th>Category</th><th class="hide-sm">Shared</th><th class="hide-sm" title="A one-off: categorised by hand, no rule">One-off</th><th></th></tr></thead><tbody>
-      ${rows.map((r, i) => `<tr><td>${esc(fmtDate(r.txn_date))}<br><span class="hint hide-sm">${esc(refName('accounts', r.account_id))}</span></td><td>${esc(r.description)}</td>
-        <td class="num ${r.amount > 0 ? 'in' : ''}">${money(r.amount)}</td>
-        <td><select data-i="${i}" class="cat" aria-label="Category">${catOpts(r.category_id)}</select>${r.category_source === 'rule' ? '<br><span class="hint">by rule</span>' : ''}</td>
-        <td class="hide-sm"><input type="checkbox" class="shr" data-i="${i}" ${r.is_shared ? 'checked' : ''} aria-label="Shared"></td>
-        <td class="hide-sm"><input type="checkbox" class="one" data-i="${i}" ${r.is_one_off ? 'checked' : ''} aria-label="One-off"></td>
-        <td><button class="small mkrule" data-i="${i}" title="Always categorise transactions like this">Make rule</button></td></tr>`).join('')}
+      <div class="tablewrap"><table class="list txlist"><thead><tr><th>Date</th><th>Description</th><th class="num">Amount</th><th>Category</th><th>Shared</th><th title="A one-off: categorised by hand, no rule">One-off</th><th></th></tr></thead><tbody>
+      ${rows.map((r, i) => `<tr><td data-label="Date">${esc(fmtDate(r.txn_date))}<br><span class="hint hide-sm">${esc(refName('accounts', r.account_id))}</span></td><td data-label="Description">${esc(r.description)}</td>
+        <td class="num ${r.amount > 0 ? 'in' : ''}" data-label="Amount">${money(r.amount)}</td>
+        <td data-label="Category"><select data-i="${i}" class="cat" aria-label="Category">${catOpts(r.category_id)}</select>${r.category_source === 'rule' ? '<br><span class="hint">by rule</span>' : ''}</td>
+        <td data-label="Shared"><input type="checkbox" class="shr" data-i="${i}" ${r.is_shared ? 'checked' : ''} aria-label="Shared"></td>
+        <td data-label="One-off"><input type="checkbox" class="one" data-i="${i}" ${r.is_one_off ? 'checked' : ''} aria-label="One-off"></td>
+        <td class="actions"><button class="small mkrule" data-i="${i}" title="Always categorise transactions like this">Make rule</button></td></tr>`).join('')}
       </tbody>${totalsRow}</table></div>` : '<p class="empty">No transactions match.</p>';
     box.querySelectorAll('.cat').forEach(sel => wireCatSelect(sel, async (id) => {
-      const r = rows[sel.dataset.i];
+      const r = rows[sel.dataset.i], before = { category_id: r.category_id, category_source: r.category_source };
       await q(sb.from('transactions').update({ category_id: id, category_source: id ? 'manual' : 'none' }).eq('id', r.id));
-      r.category_id = id; toast('Category saved (this transaction only)');
+      r.category_id = id;
+      toast('Category saved ✓', { ms: 5000, action: 'Undo', onAction: async () => {
+        await q(sb.from('transactions').update(before).eq('id', r.id)); r.category_id = before.category_id; sel.value = before.category_id || ''; toast('Category put back');
+      } });
     }, rows[sel.dataset.i].amount > 0 ? 'income' : 'expense'));
     box.querySelectorAll('.one').forEach(c => c.onchange = async () => {
       const r = rows[c.dataset.i];
@@ -839,7 +956,10 @@ function openingFor(parsed) {
 }
 
 async function importView() {
-  view.innerHTML = `<div class="page-head"><div><h1 class="page-title">Import</h1><p class="hint">Add bank statements: CommBank or Westpac CSV, or the Westpac Account activity PDF.</p></div></div><div class="card"><h2>Choose files</h2>
+  const fresh = await q(sb.from('v_account_balances').select('name, last_transaction_date').eq('is_active', true));
+  const freshHtml = fresh.length ? `<div class="chips">${fresh.map(a => { const d = a.last_transaction_date ? -daysFromToday(a.last_transaction_date) : null;
+    return `<span class="chip"><span class="fresh"><span class="fresh-dot ${d == null || d > 14 ? 'stale' : d > 7 ? 'old' : ''}"></span>${esc(a.name)}: ${d == null ? 'no data yet' : 'up to ' + fmtDate(a.last_transaction_date)}</span></span>`; }).join('')}</div>` : '';
+  view.innerHTML = `<div class="page-head"><div><h1 class="page-title">Import</h1><p class="hint">Add bank statements: CommBank or Westpac CSV, or the Westpac Account activity PDF.</p></div></div>${freshHtml}<div class="card"><h2>Choose files</h2>
     <p class="hint">Choose one or more files at once: <b>CSV</b> exports from CommBank or Westpac, or the <b>Account activity PDF</b> from the Westpac app.
     Each file is matched to an account (or a new account is set up for you). Importing the same dates twice is safe — duplicates are skipped.</p>
     <label>Statement files <input type="file" id="i-file" accept=".csv,text/csv,.pdf,application/pdf" multiple></label>
@@ -993,7 +1113,7 @@ async function recurringPage(kind) {
     const late = mine.filter(u => u.overdue);
     const pmFor = who => sum(itemsAll, i => i.amount * PER_MONTH[i.frequency] * shareFor(i.my_share_pct, who));
     $('#r-tiles').innerHTML = personView === 'all' ? `
-      <div class="tile"><div class="tile-label">${isBills ? 'Bills' : 'Income'} per month</div><div class="tile-value">${moneyRound(pm)}</div><div class="tile-sub">household${isBills ? ', including loan repayments' : ''}</div></div>
+      <div class="tile"><div class="tile-label">${isBills ? 'Bills' : 'Income'} per month ${info('Every regular item converted to a monthly amount: weekly × 52 ÷ 12, fortnightly × 26 ÷ 12, quarterly ÷ 3, yearly ÷ 12.')}</div><div class="tile-value">${moneyRound(pm)}</div><div class="tile-sub">household${isBills ? ', including loan repayments' : ''}</div></div>
       <div class="tile"><div class="tile-label">${esc(me)}</div><div class="tile-value">${moneyRound(pmFor('me'))}</div><div class="tile-sub">per month</div></div>
       <div class="tile"><div class="tile-label">${esc(partner)}</div><div class="tile-value">${moneyRound(pmFor('partner'))}</div><div class="tile-sub">per month</div></div>
       <div class="tile ${late.length ? 'bad' : ''}"><div class="tile-label">${isBills ? 'Overdue' : 'Late'}</div><div class="tile-value">${late.length}</div><div class="tile-sub">${late.length ? moneyRound(sum(late, upShare)) : 'all up to date'}</div></div>`
@@ -1031,7 +1151,7 @@ async function recurringPage(kind) {
   };
   await Promise.all([drawTop(), drawList()]);
 }
-const bills = () => recurringPage('bills');
+const bills = () => { store.set('visitedBills', true); return recurringPage('bills'); };
 const income = () => recurringPage('income');
 
 // ---------- DEBTS ----------
@@ -1047,8 +1167,8 @@ async function debts() {
     const all = allRows.filter(x => f(x) > 0);
     const who = personView === 'all' ? 'household' : personName() + "'s share";
     $('#d-sum').innerHTML = `
-      <div class="tile"><div class="tile-label">Total owed</div><div class="tile-value">${moneyRound(sum(all, x => x.current_balance * f(x)))}</div><div class="tile-sub">${esc(who)}</div></div>
-      <div class="tile"><div class="tile-label">Repayments per month</div><div class="tile-value">${moneyRound(sum(all, x => (x.min_payment || 0) * PER_MONTH[x.payment_frequency || 'monthly'] * f(x)))}</div><div class="tile-sub">${esc(who)}</div></div>
+      <div class="tile"><div class="tile-label">Total owed ${info('The balance of every active debt. Home loans update automatically when you import statements; others are what you typed in.')}</div><div class="tile-value">${moneyRound(sum(all, x => x.current_balance * f(x)))}</div><div class="tile-sub">${esc(who)}</div></div>
+      <div class="tile"><div class="tile-label">Repayments per month ${info('The required repayment for each debt converted to a monthly amount. For Afterpay and Deferit it\'s the average you\'ve actually paid over the last 6 months.')}</div><div class="tile-value">${moneyRound(sum(all, x => (x.min_payment || 0) * PER_MONTH[x.payment_frequency || 'monthly'] * f(x)))}</div><div class="tile-sub">${esc(who)}</div></div>
       <div class="tile ${Number(sd.my_total_arrears) > 0 ? 'bad' : ''}"><div class="tile-label">Overdue</div><div class="tile-value">${moneyRound(sum(all, x => x.arrears_amount * f(x)))}</div><div class="tile-sub">${esc(who)}, entered as arrears</div></div>
       <div class="tile ${sd.on_hardship ? 'good' : ''}"><div class="tile-label">On hardship</div><div class="tile-value">${sd.on_hardship || 0} <small>of ${sd.active_debts || 0}</small></div><div class="tile-sub">${sd.hardship_to_request ? sd.hardship_to_request + ' to request' : 'National Debt Helpline 1800 007 007'}</div></div>`;
     hbarChart($('#d-chart'), { items: all.map(x => ({ label: x.creditor, value: Number(x.current_balance) * f(x),
@@ -1175,8 +1295,8 @@ async function taxView() {
 
       <div class="tiles">
         <div class="tile"><div class="tile-label">Board received — ${esc(who)}</div><div class="tile-value">${moneyRound(incomeMine)}</div><div class="tile-sub">${Math.round(share * 100)}% of ${moneyRound(boardTotal)} · ${boardTx.length} payment${boardTx.length === 1 ? '' : 's'}</div></div>
-        <div class="tile"><div class="tile-label">Claimable costs — ${esc(who)}</div><div class="tile-value">${moneyRound(claimMine)}</div><div class="tile-sub">${floor == null ? 'needs the floor-area %' : `${Math.round(factor * 1000) / 10}% of included costs`}</div></div>
-        <div class="tile ${net < 0 ? 'good' : ''}"><div class="tile-label">Net rental ${net < 0 ? 'loss' : 'income'}</div><div class="tile-value">${moneyRound(net)}</div><div class="tile-sub">what goes on the return (estimate)</div></div>
+        <div class="tile"><div class="tile-label">Claimable costs — ${esc(who)} ${info('Each ticked house cost × the share of the home the boarders use × the share of the year they lived there × this person\'s ownership share. This follows the ATO floor-area method — check it with Tax Help or a tax agent.')}</div><div class="tile-value">${moneyRound(claimMine)}</div><div class="tile-sub">${floor == null ? 'needs the floor-area %' : `${Math.round(factor * 1000) / 10}% of included costs`}</div></div>
+        <div class="tile ${net < 0 ? 'good' : ''}"><div class="tile-label">Net rental ${net < 0 ? 'loss' : 'income'} ${info('Board received minus claimable costs. This is the estimate that goes in the rental section of the tax return.')}</div><div class="tile-value">${moneyRound(net)}</div><div class="tile-sub">what goes on the return (estimate)</div></div>
       </div>
 
       <div class="grid2">
@@ -1486,7 +1606,7 @@ async function payView() {
       <div class="tile"><div class="tile-label">Gross pay</div><div class="tile-value">${moneyRound(gross)}</div><div class="tile-sub">${rows.length} payslip${rows.length === 1 ? '' : 's'} this year</div></div>
       <div class="tile"><div class="tile-label">Tax withheld</div><div class="tile-value">${moneyRound(tax)}</div><div class="tile-sub">${gross ? (tax / gross * 100).toFixed(1) : 0}% of gross</div></div>
       <div class="tile good"><div class="tile-label">Take-home</div><div class="tile-value">${moneyRound(net)}</div><div class="tile-sub">${rows.length ? 'average ' + moneyRound(net / rows.length) + ' a pay' : ''}</div></div>
-      <div class="tile ${shortSlips.length ? 'bad' : ''}"><div class="tile-label">Employer super</div><div class="tile-value">${moneyRound(sup)}</div><div class="tile-sub">${shortSlips.length ? `${shortSlips.length} payslip(s) look short` : sgDue ? `12% minimum ≈ ${moneyRound(sgDue)} ✓` : 'enter ordinary pay to check'}</div></div>
+      <div class="tile ${shortSlips.length ? 'bad' : ''}"><div class="tile-label">Employer super ${info('Employers must pay at least 12% of ordinary pay (plus leave and salary sacrifice) as super, within 7 days of each payday. Payslips below that are flagged.')}</div><div class="tile-value">${moneyRound(sup)}</div><div class="tile-sub">${shortSlips.length ? `${shortSlips.length} payslip(s) look short` : sgDue ? `12% minimum ≈ ${moneyRound(sgDue)} ✓` : 'enter ordinary pay to check'}</div></div>
     </div>
     <div class="grid2">
       <section class="card"><div class="sec-head"><div><h2>Pay by month</h2><p class="hint">Take-home and tax withheld</p></div></div><div id="ps-chart"></div></section>
@@ -1523,9 +1643,10 @@ async function payView() {
   $('#ps-add').onclick = async () => { if (await payslipForm()) payView(); };
   $('#ps-scan').onclick = () => scanPayslip(payView);
   view.querySelectorAll('.ps-edit').forEach(b => b.onclick = async () => { if (await payslipForm(rows[b.dataset.i])) payView(); });
-  view.querySelectorAll('.ps-del').forEach(b => b.onclick = async () => {
-    if (!confirm('Delete this payslip? This cannot be undone.')) return;
-    await q(sb.from('payslips').delete().eq('id', rows[b.dataset.i].id)); toast('Deleted'); payView();
+  view.querySelectorAll('.ps-del').forEach(b => b.onclick = () => {
+    const tr = b.closest('tr'), p = rows[b.dataset.i];
+    softDelete({ label: `Deleted payslip ${fmtDate(p.pay_date)}`, hide: () => tr.classList.add('hidden'), restore: () => tr.classList.remove('hidden'),
+      commit: async () => { await q(sb.from('payslips').delete().eq('id', p.id)); payView(); } });
   });
   view.querySelectorAll('.ps-regular').forEach(b => b.onclick = async () => {
     const p = all.find(x => x.id === b.dataset.id);
@@ -1589,17 +1710,71 @@ async function setup() {
 const VIEWS = { dashboard, budget, bills, income, debts, transactions, sort: sortView, import: importView, shared, pay: payView, tax: taxView, setup };
 async function updateSortBadge() {
   const { count } = await sb.from('transactions').select('id', { count: 'exact', head: true }).is('category_id', null);
-  const b = $('#sort-badge'); if (b) { b.textContent = count || ''; b.classList.toggle('hidden', !count); }
+  for (const id of ['#sort-badge', '#sort-badge-m']) { const b = $(id); if (b) { b.textContent = count || ''; b.classList.toggle('hidden', !count); } }
 }
 let currentView = 'dashboard';
 async function show(name, opts) {
   currentView = name; renderWhoSwitch();
-  document.querySelectorAll('#tabs button').forEach(b => b.classList.toggle('active', b.dataset.view === name));
+  document.querySelectorAll('#tabs button, #bottomnav button[data-view], #more-sheet button').forEach(b => b.classList.toggle('active', b.dataset.view === name));
+  $('#more-btn')?.classList.toggle('active', !['dashboard', 'budget', 'bills', 'sort'].includes(name));
+  closeSheets();
   history.replaceState(null, '', '#' + name);
   window.scrollTo(0, 0);
-  try { await VIEWS[name](opts); updateSortBadge(); } catch (e) { view.innerHTML = `<div class="card"><p class="msg error">Something went wrong loading this page: ${esc(e.message)}</p></div>`; }
+  view.innerHTML = skeleton(name === 'transactions' || name === 'sort' ? 0 : 4);
+  try { await VIEWS[name](opts); updateSortBadge(); }
+  catch (e) { view.innerHTML = `<div class="card"><h2>That page didn’t load</h2><p class="msg error">${esc(friendlyError(e))}</p><button class="primary" onclick="location.reload()">Try again</button></div>`; }
 }
-document.querySelectorAll('#tabs button').forEach(b => b.onclick = () => show(b.dataset.view));
+document.querySelectorAll('#tabs button, #bottomnav button[data-view], #more-sheet button').forEach(b => b.onclick = () => show(b.dataset.view));
+function closeSheets() { $('#more-sheet')?.classList.add('hidden'); $('#more-btn')?.setAttribute('aria-expanded', 'false'); $('#settings-pop')?.classList.add('hidden'); $('#settings-btn')?.setAttribute('aria-expanded', 'false'); }
+
+// ---------- interface wiring ----------
+applyPrefs(); wireInfoTips(); watchOnline(); wireInstall();
+const rerender = () => { if (session) show(currentView); };
+$('#settings-btn').onclick = e => { e.stopPropagation(); const pop = $('#settings-pop'); const open = pop.classList.contains('hidden');
+  closeSheets(); if (open) { settingsMenu(rerender); pop.classList.remove('hidden'); $('#settings-btn').setAttribute('aria-expanded', 'true'); } };
+$('#privacy-btn').onclick = () => setPref('privacy', !prefs.privacy);
+$('#more-btn').onclick = e => { e.stopPropagation(); const sh = $('#more-sheet'); const open = sh.classList.contains('hidden'); closeSheets(); if (open) { sh.classList.remove('hidden'); $('#more-btn').setAttribute('aria-expanded', 'true'); } };
+document.addEventListener('click', e => { if (!e.target.closest('#settings-pop, #settings-btn, #more-sheet, #more-btn')) closeSheets(); });
+matchMedia('(prefers-color-scheme: dark)').addEventListener?.('change', () => { if (prefs.theme === 'auto') { applyPrefs(); rerender(); } });
+
+// search: transactions, bills/income, debts, payslips, categories
+let searchT;
+function openSearch() { $('#search').classList.remove('hidden'); $('#search-input').value = ''; $('#search-results').innerHTML = '<p class="hint">Type at least 2 letters.</p>'; $('#search-input').focus(); }
+function closeSearch() { $('#search').classList.add('hidden'); }
+$('#search-btn').onclick = openSearch;
+$('#search').addEventListener('click', e => { if (e.target.id === 'search') closeSearch(); });
+document.addEventListener('keydown', e => {
+  if (!session) return;
+  if (e.key === 'Escape') { closeSearch(); closeSheets(); }
+  if ((e.key === '/' && !/input|textarea|select/i.test(document.activeElement.tagName)) || (e.key.toLowerCase() === 'k' && (e.ctrlKey || e.metaKey))) { e.preventDefault(); openSearch(); }
+});
+$('#search-input').oninput = e => { clearTimeout(searchT); searchT = setTimeout(() => runSearch(e.target.value.trim()), 250); };
+async function runSearch(term) {
+  const box = $('#search-results');
+  if (term.length < 2) { box.innerHTML = '<p class="hint">Type at least 2 letters.</p>'; return; }
+  const like = `%${term.replace(/[%_,()]/g, '')}%`;
+  const [tx, ri, de, ps] = await Promise.all([
+    q(sb.from('transactions').select('id, txn_date, description, amount').ilike('description', like).order('txn_date', { ascending: false }).limit(8)),
+    q(sb.from('recurring_items').select('id, name, direction, amount, frequency').ilike('name', like).limit(5)),
+    q(sb.from('debts').select('id, creditor, current_balance').ilike('creditor', like).limit(5)),
+    q(sb.from('payslips').select('id, employer, pay_date, net_pay').ilike('employer', like).limit(5)),
+  ]);
+  const cats = cache.categories.filter(c => c.name.toLowerCase().includes(term.toLowerCase())).slice(0, 5);
+  const grp = (title, items) => items.length ? `<h3>${title}</h3>${items.join('')}` : '';
+  const item = (go, main, sub, amt) => `<button class="sr" data-go="${go}"><span><b>${main}</b><span class="hint">${sub}</span></span>${amt ? `<span class="num">${amt}</span>` : ''}</button>`;
+  box.innerHTML = (grp('Transactions', tx.map(t => item('tx:' + term, esc(t.description), esc(fmtDate(t.txn_date)), money(t.amount)))) +
+    grp('Bills & income', ri.map(r => item(r.direction === 'in' ? 'income' : 'bills', esc(r.name), r.direction === 'in' ? 'income' : 'bill', `${money(r.amount)} / ${FREQ_WORD[r.frequency]}`))) +
+    grp('Debts', de.map(d => item('debts', esc(d.creditor), 'debt', money(d.current_balance)))) +
+    grp('Payslips', ps.map(p => item('pay', esc(p.employer), esc(fmtDate(p.pay_date)), money(p.net_pay)))) +
+    grp('Categories', cats.map(c => item('cat:' + c.id, esc(c.name), 'show transactions in this category', '')))) || '<p class="empty">No matches.</p>';
+  if (tx.length === 8) box.insertAdjacentHTML('afterbegin', `<button class="sr" data-go="tx:${esc(term)}"><span><b>See all transactions matching "${esc(term)}"</b></span></button>`);
+  box.querySelectorAll('[data-go]').forEach(b => b.onclick = () => {
+    const g = b.dataset.go; closeSearch();
+    if (g.startsWith('tx:')) show('transactions', { search: g.slice(3) });
+    else if (g.startsWith('cat:')) show('transactions', { category: g.slice(4) });
+    else show(g);
+  });
+}
 
 let session = null;
 async function enter(s) {
@@ -1608,12 +1783,14 @@ async function enter(s) {
   await q(sb.rpc('seed_defaults'));   // safe every time: only adds what's missing
   await loadLookups();
   $('#whoswitch').classList.remove('hidden'); renderWhoSwitch();
+  $('#tools').classList.remove('hidden'); $('#bottomnav').classList.remove('hidden');
   const start = location.hash.slice(1);
   show(VIEWS[start] ? start : 'dashboard');
 }
 function leave() {
   session = null; view.innerHTML = '';
   $('#auth').classList.remove('hidden'); $('#tabs').classList.add('hidden'); $('#signout').classList.add('hidden'); $('#whoswitch')?.classList.add('hidden');
+  $('#tools').classList.add('hidden'); $('#bottomnav').classList.add('hidden');
 }
 $('#authform').onsubmit = async e => {
   e.preventDefault(); const msg = $('#authmsg'); msg.className = 'msg'; msg.textContent = 'Signing in…';
@@ -1630,6 +1807,7 @@ $('#signup').onclick = async () => {
   else { msg.className = 'msg'; msg.textContent = 'Account created. Check your email and click the confirmation link, then sign in here.'; }
 };
 $('#signout').onclick = async () => { await sb.auth.signOut(); leave(); };
+$('#signout-m').onclick = async () => { closeSheets(); await sb.auth.signOut(); leave(); };
 
 const { data: { session: existing } } = await sb.auth.getSession();
 if (existing) enter(existing);

@@ -6,17 +6,31 @@
   <meta name="theme-color" content="#1f4e46">
   <title>Household Finances</title>
   <link rel="manifest" href="manifest.webmanifest">
+  <link rel="apple-touch-icon" href="icon-192.png">
+  <meta name="apple-mobile-web-app-capable" content="yes">
   <link rel="preconnect" href="https://fonts.googleapis.com">
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
   <link href="https://fonts.googleapis.com/css2?family=Atkinson+Hyperlegible:wght@400;700&display=swap" rel="stylesheet">
-  <link rel="stylesheet" href="styles.css?v=202611230045">
+  <link rel="stylesheet" href="styles.css?v=202611230055">
 </head>
 <body>
   <header class="topbar">
     <div class="brand"><span class="brand-mark" aria-hidden="true">$</span> Household Finances</div>
     <div class="topbar-right"><div id="whoswitch" class="seg whoseg hidden" role="group" aria-label="Whose figures to show"></div>
-    <button id="signout" class="link hidden" type="button">Sign out</button></div>
+      <div class="tools hidden" id="tools">
+        <button id="install-btn" class="tool hidden" type="button" title="Install as an app">⬇ Install</button>
+        <button id="search-btn" class="tool" type="button" title="Search (press /)" aria-label="Search">🔍</button>
+        <button id="privacy-btn" class="tool" type="button" title="Hide amounts" aria-label="Hide or show amounts">👁</button>
+        <button id="settings-btn" class="tool" type="button" title="Text size, font and theme" aria-label="Display settings" aria-expanded="false">Aa</button>
+      </div>
+      <button id="signout" class="link hidden" type="button">Sign out</button></div>
   </header>
+  <div id="offline-bar" class="offline-bar hidden" role="status">You're offline — changes can't be saved until you reconnect.</div>
+  <div id="settings-pop" class="settings-pop hidden" role="dialog" aria-label="Display settings"></div>
+  <div id="search" class="search hidden" role="dialog" aria-label="Search">
+    <div class="search-box"><input id="search-input" type="search" placeholder="Search transactions, bills, income, debts…" autocomplete="off">
+      <div id="search-results" class="search-results"></div><p class="hint">Press Esc to close.</p></div>
+  </div>
 
   <nav id="tabs" class="tabs hidden" aria-label="Sections">
     <div class="tabs-main">
@@ -53,7 +67,20 @@
     <div id="view"></div>
   </main>
 
+  <nav id="bottomnav" class="bottomnav hidden" aria-label="Main">
+    <button data-view="dashboard"><span aria-hidden="true">⌂</span>Home</button>
+    <button data-view="budget"><span aria-hidden="true">◔</span>Budget</button>
+    <button data-view="bills"><span aria-hidden="true">▤</span>Bills</button>
+    <button data-view="sort"><span aria-hidden="true">⇅</span>To sort<span id="sort-badge-m" class="badge hidden"></span></button>
+    <button id="more-btn" type="button" aria-expanded="false"><span aria-hidden="true">☰</span>More</button>
+  </nav>
+  <div id="more-sheet" class="more-sheet hidden" role="dialog" aria-label="All pages">
+    <button data-view="income">Income</button><button data-view="debts">Debts</button><button data-view="transactions">Transactions</button>
+    <button data-view="import">Import</button><button data-view="shared">Shared costs</button><button data-view="pay">Payslips</button>
+    <button data-view="tax">Tax</button><button data-view="setup">Setup</button>
+    <button class="signout-m" id="signout-m" type="button">Sign out</button>
+  </div>
   <div id="toast" class="toast" role="status" aria-live="polite"></div>
-  <script type="module" src="app.js?v=202611230045"></script>
+  <script type="module" src="app.js?v=202611230055"></script>
 </body>
 </html>
