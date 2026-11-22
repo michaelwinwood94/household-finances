@@ -1,8 +1,8 @@
 import { createClient } from 'https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2/+esm';
-import { SUPABASE_URL, SUPABASE_PUBLISHABLE_KEY } from './config.js?v=202611230030';
-import { parseBankCsv, parseWestpacActivity, splitAccounts, linesFromItems } from './csv.js?v=202611230030';
-import { readPayslip, toLines } from './payslip.js?v=202611230030';
-import { columnChart, hbarChart, SERIES, moneyRound, moneyCompact } from './charts.js?v=202611230030';
+import { SUPABASE_URL, SUPABASE_PUBLISHABLE_KEY } from './config.js?v=202611230045';
+import { parseBankCsv, parseWestpacActivity, splitAccounts, linesFromItems } from './csv.js?v=202611230045';
+import { readPayslip, toLines } from './payslip.js?v=202611230045';
+import { columnChart, hbarChart, SERIES, moneyRound, moneyCompact } from './charts.js?v=202611230045';
 
 const sb = createClient(SUPABASE_URL, SUPABASE_PUBLISHABLE_KEY);
 const $ = (s, el = document) => el.querySelector(s);
@@ -1095,10 +1095,11 @@ async function taxView() {
     const page = await q(sb.from('transactions').select('id, txn_date, amount, description, category_id, account_id').gte('txn_date', fyStart).lte('txn_date', fyEnd).order('txn_date').range(from, from + 999));
     txns = txns.concat(page); if (page.length < 1000) break;
   }
-  const [saved, extras, boardItems] = await Promise.all([
+  const [saved, extras, boardItems, roomYears] = await Promise.all([
     q(sb.from('tax_years').select('*').eq('fy', taxFy).maybeSingle()),
     q(sb.from('tax_extras').select('*').eq('fy', taxFy).order('entry_date')),
     q(sb.from('recurring_items').select('*').eq('direction', 'in')),
+    q(sb.from('tax_years').select('fy, rooms').order('fy', { ascending: false })),
   ]);
   const catBy = new Map(cache.categories.map(c => [c.id, c]));
   const boardCat = cache.categories.find(c => /board|rent received/i.test(c.name) && c.kind === 'income');
@@ -1114,8 +1115,17 @@ async function taxView() {
     included_categories: cache.categories.filter(c => ['Rates', 'Water', 'Power', 'Phone & internet'].includes(c.name)).map(c => c.id),
     included_loan_accounts: loans.filter(a => a.account_type === 'mortgage').map(a => a.id),
     notes: '',
+    rooms: (roomYears.find(y => (y.rooms || []).length) || {}).rooms || [],
   };
   const st = { ...defaults, ...(saved || {}) };
+  if (!(st.rooms || []).length) st.rooms = defaults.rooms;
+  const USES = { boarders: 'Boarders only', shared: 'Shared', owners: 'Owners only', excluded: 'Not counted' };
+  const roomTotals = () => {
+    const rs = st.rooms || [], t = u => sum(rs.filter(r => r.use === u), r => r.m2);
+    const A = t('boarders'), B = t('shared'), C = sum(rs.filter(r => r.use !== 'excluded'), r => r.m2);
+    return { A, B, C, pct: C ? Math.round(((A + B / 2) / C) * 10000) / 100 : null };
+  };
+  if ((st.rooms || []).length) { const rt = roomTotals(); st.floor_pct = rt.pct; st.area_private = rt.A; st.area_shared = rt.B; st.area_total = rt.C; }
 
   const draw = () => {
     const share = taxWho === 'me' ? st.my_share_pct / 100 : 1 - st.my_share_pct / 100;
@@ -1171,12 +1181,21 @@ async function taxView() {
 
       <div class="grid2">
         <section class="card"><div class="sec-head"><div><h2>Home used by boarders</h2><p class="hint">ATO floor-area method: (boarders' own rooms + half the shared areas) ÷ whole home</p></div></div>
-          <div class="formgrid">
+          ${(st.rooms || []).length ? (() => { const rt = roomTotals(); return `<div class="tablewrap"><table class="list rooms"><thead><tr><th>Room</th><th class="num">m²</th><th>Used by</th><th></th></tr></thead><tbody>
+            ${st.rooms.map((r, i) => `<tr class="use-${r.use}"><td><input class="r-name" data-i="${i}" value="${esc(r.name)}" aria-label="Room name">${r.note ? `<div class="hint">${esc(r.note)}</div>` : ''}</td>
+              <td class="num"><input class="r-m2" data-i="${i}" type="number" step="0.01" min="0" value="${r.m2}" aria-label="Area m²" style="width:6.5rem;text-align:right"></td>
+              <td><select class="r-use" data-i="${i}" aria-label="Used by">${Object.entries(USES).map(([k, v]) => `<option value="${k}" ${r.use === k ? 'selected' : ''}>${v}</option>`).join('')}</select></td>
+              <td><button class="small ghost r-del" data-i="${i}" aria-label="Remove room">✕</button></td></tr>`).join('')}</tbody>
+            <tfoot><tr class="total"><td colspan="4">Boarders only <b>${rt.A.toFixed(2)} m²</b> · Shared <b>${rt.B.toFixed(2)} m²</b> · Whole home <b>${rt.C.toFixed(2)} m²</b><br>
+              (${rt.A.toFixed(2)} + ${rt.B.toFixed(2)} ÷ 2) ÷ ${rt.C.toFixed(2)} = <b>${rt.pct}%</b> of the home</td></tr></tfoot></table></div>
+            <div class="row"><button class="small" id="r-add">+ Add room</button><span class="hint">Change any size or who uses it — the % updates when you press Save.</span></div>`; })() : ''}
+          <div class="formgrid ${(st.rooms || []).length ? 'hidden' : ''}">
             <label>Boarders' own rooms (m²) <input type="number" step="0.1" id="t-ap" value="${esc(st.area_private ?? '')}"></label>
             <label>Shared areas (m²) <span class="hint">kitchen, lounge, bathroom…</span><input type="number" step="0.1" id="t-as" value="${esc(st.area_shared ?? '')}"></label>
             <label>Whole home (m²) <input type="number" step="0.1" id="t-at" value="${esc(st.area_total ?? '')}"></label>
             <label>Share of home used <span class="hint">% — worked out, or type your own</span><input type="number" step="0.01" min="0" max="100" id="t-floor" value="${esc(st.floor_pct ?? '')}"></label>
           </div>
+          ${(st.rooms || []).length ? '' : '<p class="hint"><button class="link" id="r-start">Or list the rooms one by one</button> (more accurate).</p>'}
           <div class="formgrid">
             <label>Boarders there from <input type="date" id="t-from" value="${esc(st.rented_from ?? '')}"></label>
             <label>Until <span class="hint">blank = still there</span><input type="date" id="t-to" value="${esc(st.rented_to ?? '')}"></label>
@@ -1251,7 +1270,15 @@ async function taxView() {
       st.included_loan_accounts = c.checked ? [...new Set([...st.included_loan_accounts, c.dataset.id])] : st.included_loan_accounts.filter(x => x !== c.dataset.id);
       save(true);
     });
+    view.querySelectorAll('.r-name').forEach(el => el.oninput = () => { st.rooms[el.dataset.i].name = el.value; });
+    view.querySelectorAll('.r-m2').forEach(el => el.oninput = () => { st.rooms[el.dataset.i].m2 = Number(el.value || 0); });
+    view.querySelectorAll('.r-use').forEach(el => el.onchange = () => { st.rooms[el.dataset.i].use = el.value; const rt = roomTotals(); Object.assign(st, { floor_pct: rt.pct, area_private: rt.A, area_shared: rt.B, area_total: rt.C }); draw(); });
+    view.querySelectorAll('.r-del').forEach(el => el.onclick = () => { st.rooms.splice(+el.dataset.i, 1); const rt = roomTotals(); Object.assign(st, { floor_pct: rt.pct, area_private: rt.A, area_shared: rt.B, area_total: rt.C }); draw(); });
+    $('#r-add')?.addEventListener('click', () => { st.rooms.push({ name: 'New room', m2: 0, use: 'owners', note: '' }); draw(); });
+    $('#r-start')?.addEventListener('click', () => { st.rooms = [{ name: 'Boarder bedroom', m2: 0, use: 'boarders', note: '' }, { name: 'Kitchen', m2: 0, use: 'shared', note: '' }, { name: 'Rest of home', m2: 0, use: 'owners', note: '' }]; draw(); });
     $('#t-save').onclick = () => {
+      if ((st.rooms || []).length) { const rt = roomTotals(); Object.assign(st, { floor_pct: rt.pct, area_private: rt.A, area_shared: rt.B, area_total: rt.C });
+        $('#t-floor').value = rt.pct; $('#t-ap').value = rt.A; $('#t-as').value = rt.B; $('#t-at').value = rt.C; }
       const num = s => $(s).value === '' ? null : Number($(s).value);
       Object.assign(st, { area_private: num('#t-ap'), area_shared: num('#t-as'), area_total: num('#t-at'), floor_pct: num('#t-floor'),
         rented_from: $('#t-from').value || null, rented_to: $('#t-to').value || null, my_share_pct: num('#t-share') ?? 50 });
@@ -1261,6 +1288,7 @@ async function taxView() {
     $('#t-csv').onclick = () => {
       const rows = [['Household Finances — tax summary'], ['Financial year', `${taxFy.slice(0, 4)}-${taxFy.slice(5)}`], ['Person', who], ['Share of house & board %', Math.round(share * 100)],
         ['Share of home used by boarders %', st.floor_pct ?? ''], ['Days boarders there', `${rentedDays} of ${periodDays}`], ['Claimable factor %', Math.round(factor * 10000) / 100], [],
+        ...((st.rooms || []).length ? [['Room', 'm²', 'Used by'], ...st.rooms.map(r => [r.name, Number(r.m2).toFixed(2), USES[r.use]]), []] : []),
         ['Board received (household)', boardTotal.toFixed(2)], [`Board received (${who})`, incomeMine.toFixed(2)], [],
         ['Cost', 'Paid this year (household)', 'Counted?', 'Claimable (household)', `Claimable (${who})`],
         ...candidates.map(x => [x.c.name.replace(' (not counted)', ''), x.total.toFixed(2), incl(x.id) ? 'yes' : 'no', incl(x.id) ? (x.total * factor).toFixed(2) : '0.00', incl(x.id) ? (x.total * factor * share).toFixed(2) : '0.00']),
@@ -1276,7 +1304,7 @@ async function taxView() {
   async function save(quiet) {
     await q(sb.from('tax_years').upsert({ fy: taxFy, floor_pct: st.floor_pct, area_private: st.area_private, area_shared: st.area_shared, area_total: st.area_total,
       rented_from: st.rented_from, rented_to: st.rented_to, my_share_pct: st.my_share_pct, included_categories: st.included_categories,
-      included_loan_accounts: st.included_loan_accounts, notes: st.notes || null }, { onConflict: 'owner_id,fy' }));
+      included_loan_accounts: st.included_loan_accounts, notes: st.notes || null, rooms: st.rooms || [] }, { onConflict: 'owner_id,fy' }));
     toast(quiet ? 'Updated' : 'Saved'); draw();
   }
   async function renderCrudExtras() {

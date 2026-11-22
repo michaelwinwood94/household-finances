@@ -180,6 +180,11 @@ details.fold[open] > summary { margin-bottom: .6rem; }
   max-height: 340px; overflow-y: auto; min-width: 260px; box-shadow: 0 8px 24px rgba(0,0,0,.15); }
 label.mcheck { font-weight: 400; display: block; margin: .15rem 0; }
 
+/* ---- tax rooms ---- */
+table.rooms input, table.rooms select { margin: 0; padding: .3rem .45rem; }
+table.rooms tr.use-boarders td:first-child { box-shadow: inset 4px 0 0 #2a78d6; }
+table.rooms tr.use-shared td:first-child { box-shadow: inset 4px 0 0 #eda100; }
+
 /* ---- payslips ---- */
 input.scanned { border-color: var(--good); background: #f0faf3; box-shadow: 0 0 0 2px #cdebd7; }
 .latest + .latest { margin-top: 1rem; }
