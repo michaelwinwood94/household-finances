@@ -1,0 +1,8 @@
+-- Loan repayments as bills; interest not counted as spending (applied 22 Nov 2026)
+-- * v_monthly_commitments: bills linked to a debt (debt_id) are not added to monthly_out
+--   (the debt's monthly cost already counts them).
+-- * public.mark_item_paid(uuid): rolls a bill/income item to its next due date.
+-- * budget_summary: regular_out excludes debt-linked bills; bill_items gains is_debt_repayment.
+-- Data (this household): "Loan interest" category renamed "Loan interest (not counted)" and set to
+-- kind 'transfer'; repayment bills added for both home loans ($3,118 and $444/month), linked to their debts.
+-- Full SQL in the Supabase migration history (012_repayments_not_interest).

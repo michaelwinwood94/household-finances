@@ -95,7 +95,7 @@ const TABLES = {
       { k: 'next_due', label: 'Next due date', type: 'date', required: true, default: today },
       { k: 'category_id', label: 'Category', type: 'ref', ref: 'categories' },
       { k: 'account_id', label: 'Paid from / into', type: 'ref', ref: 'accounts' },
-      { k: 'debt_id', label: 'Linked debt', type: 'ref', ref: 'debts' },
+      { k: 'debt_id', label: 'Linked debt', type: 'ref', ref: 'debts', hint: 'Set this for a loan repayment — it then counts once, under Debts, on the Budget page' },
       { k: 'match_text', label: 'Text on bank statement', type: 'text', hint: 'When an imported transaction contains this, the bill is marked paid and the due date moves on' },
       { k: 'is_shared', label: 'Shared with ex-partner', type: 'checkbox' },
       { k: 'my_share_pct', label: 'My share %', type: 'number', default: 100 },
@@ -106,8 +106,9 @@ const TABLES = {
     footer: rows => {
       const m = (dir, share) => sum(rows.filter(r => r.is_active && r.direction === dir), r => r.amount * PER_MONTH[r.frequency] * (share ? r.my_share_pct / 100 : 1));
       const inAll = m('in'), outAll = m('out'), inMe = m('in', 1), outMe = m('out', 1);
-      return `Per month — <b>household:</b> in ${money(inAll)} · out ${money(outAll)} · left ${money(inAll - outAll)}
-        &nbsp;|&nbsp; <b>${esc(cache.settings?.display_name || 'my')} share:</b> in ${money(inMe)} · out ${money(outMe)} · left ${money(inMe - outMe)}`;
+      return `Per month (including loan repayments) — <b>household:</b> in ${money(inAll)} · out ${money(outAll)} · left ${money(inAll - outAll)}
+        &nbsp;|&nbsp; <b>${esc(cache.settings?.display_name || 'my')} share:</b> in ${money(inMe)} · out ${money(outMe)} · left ${money(inMe - outMe)}
+        <br><span class="hint">Afterpay, Deferit and Latitude aren't bills here — they're counted under Debts.</span>`;
     },
   },
   debts: {
@@ -193,7 +194,7 @@ function cell(def, row, k) {
 
 // ---------- categories: picker with "+ New category…" ----------
 function catOptions(selected, { blank = '— choose —' } = {}) {
-  const groups = { expense: 'Spending', income: 'Income', transfer: 'Transfers (not counted)' };
+  const groups = { expense: 'Spending', income: 'Income', transfer: 'Not counted (transfers, loan interest)' };
   return `<option value="">${blank}</option>` + Object.entries(groups).map(([kind, lbl]) => {
     const list = cache.categories.filter(c => c.kind === kind);
     return list.length ? `<optgroup label="${lbl}">${list.map(c => `<option value="${c.id}" ${c.id === selected ? 'selected' : ''}>${esc(c.name)}</option>`).join('')}</optgroup>` : '';
@@ -315,6 +316,14 @@ async function renderCrud(container, key, { filter = {}, title, onChange, extra 
   return rows;
 }
 
+async function markPaid(itemId, due, after) {
+  if (!confirm(`Mark this as paid? The due date (${fmtDate(due)}) moves on to the next one.`)) return;
+  const next = await q(sb.rpc('mark_item_paid', { p_item_id: itemId }));
+  // clear any alert about this due date
+  await sb.from('alerts').update({ dismissed: true }).like('source_key', `%${itemId}:${due}`);
+  toast(next ? `Marked paid — next due ${fmtDate(next)}` : 'Marked paid'); await after();
+}
+
 // ---------- DASHBOARD ----------
 async function dashboard() {
   view.innerHTML = '<p>Loading…</p>';
@@ -366,7 +375,9 @@ async function dashboard() {
     <div class="grid" style="grid-template-columns:repeat(auto-fit,minmax(320px,1fr))">
       <div class="card"><h2>Next 3 weeks</h2>
         ${upcoming.length ? `<table><tbody>${upcoming.map(u => `<tr class="${u.overdue ? 'overdue' : ''}"><td>${esc(fmtDate(u.due_date))}<br><span class="hint">${u.overdue ? (u.direction === 'in' ? 'not received yet' : 'OVERDUE') : daysFromToday(u.due_date) === 0 ? 'today' : 'in ' + daysFromToday(u.due_date) + ' days'}</span></td>
-          <td>${esc(u.name)}${u.is_shared ? ' <span class="pill">shared</span>' : ''}</td><td class="num ${u.direction === 'in' ? 'in' : ''}">${u.direction === 'in' ? '+' : '−'}${money(u.my_amount)}</td></tr>`).join('')}</tbody>
+          <td>${esc(u.name)}${u.is_shared ? ' <span class="pill">shared</span>' : ''}${u.debt_id ? ' <span class="pill warn">repayment</span>' : ''}
+            ${u.direction === 'out' && daysFromToday(u.due_date) <= 7 ? `<br><button class="small mark-paid" data-id="${u.item_id}" data-due="${u.due_date}">Mark paid</button>` : ''}</td>
+          <td class="num ${u.direction === 'in' ? 'in' : ''}">${u.direction === 'in' ? '+' : '−'}${money(u.my_amount)}</td></tr>`).join('')}</tbody>
           <tfoot><tr class="total"><td><b>Total</b></td><td>In ${money(sum(upcoming.filter(u => u.direction === 'in'), u => u.my_amount))} · Out ${money(sum(upcoming.filter(u => u.direction === 'out'), u => u.my_amount))}</td>
           <td class="num"><b>${money(sum(upcoming, u => (u.direction === 'in' ? 1 : -1) * u.my_amount))}</b></td></tr></tfoot></table>`
           : '<p class="empty">No bills or income set up yet — add them under Bills &amp; income.</p>'}
@@ -389,6 +400,7 @@ async function dashboard() {
       </div>
     </div>`;
   $('#go-uncat')?.addEventListener('click', () => show('sort'));
+  view.querySelectorAll('.mark-paid').forEach(b => b.onclick = () => markPaid(b.dataset.id, b.dataset.due, dashboard));
   view.querySelectorAll('.dismiss').forEach(b => b.onclick = async () => {
     await q(sb.from('alerts').update({ dismissed: true }).eq('id', alerts[b.dataset.i].id));
     b.closest('tr').remove(); if (!view.querySelector('.dismiss')) $('#alerts')?.remove();
@@ -428,8 +440,8 @@ async function budget() {
           ${p.income_items.map(i => row([esc(i.name), `${money(i.amount)}/${freq(i.frequency)}`, i.share + '%', money(i.monthly)])).join('')}
           ${row(['<b>Total</b>', '', '', `<b>${money(p.regular_in)}</b>`])}</tbody></table></div>` : '<p class="empty">None.</p>'}</div>
         <div class="card"><h2>Regular bills</h2>${p.bill_items.length ? `<div class="tablewrap"><table><thead><tr><th>Bill</th><th class="num">Amount</th><th class="num">Share</th><th class="num">Per month</th></tr></thead><tbody>
-          ${p.bill_items.map(i => row([esc(i.name), `${money(i.amount)}/${freq(i.frequency)}`, i.share + '%', money(i.monthly)])).join('')}
-          ${row(['<b>Total</b>', '', '', `<b>${money(p.regular_out)}</b>`])}</tbody></table></div>` : '<p class="empty">None.</p>'}</div>
+          ${p.bill_items.map(i => row([esc(i.name) + (i.is_debt_repayment ? ' <span class="pill warn">repayment</span>' : ''), `${money(i.amount)}/${freq(i.frequency)}`, i.share + '%', i.is_debt_repayment ? `<span class="hint">in Debts</span>` : money(i.monthly)])).join('')}
+          ${row(['<b>Total</b> <span class="hint">(repayments counted under Debts)</span>', '', '', `<b>${money(p.regular_out)}</b>`])}</tbody></table></div>` : '<p class="empty">None.</p>'}</div>
         <div class="card"><h2>Debts</h2>${p.debt_items.length ? `<div class="tablewrap"><table><thead><tr><th>Debt</th><th class="num">Share</th><th class="num">Balance</th><th class="num">Per month</th></tr></thead><tbody>
           ${p.debt_items.map(d => row([`${esc(d.creditor)}${d.hardship === 'approved' ? ' <span class="pill good">hardship</span>' : ''}`, d.share + '%', d.balance ? money(d.balance) : '<span class="hint">not entered</span>', money(d.monthly)])).join('')}
           ${row(['<b>Total</b>', '', `<b>${money(p.debt_balance)}</b>`, `<b>${money(p.debt_monthly)}</b>`])}</tbody></table></div>` : '<p class="empty">None.</p>'}</div>
@@ -444,9 +456,24 @@ async function budget() {
 
 // ---------- TRANSACTIONS ----------
 async function transactions(opts = {}) {
-  const state = { month: opts.uncategorised ? '' : today().slice(0, 7), account: '', category: '', uncategorised: !!opts.uncategorised, search: '' };
+  const thisMonth = today().slice(0, 7);
+  const state = { months: new Set(opts.uncategorised ? [] : [thisMonth]), account: '', category: '', uncategorised: !!opts.uncategorised, search: '' };
+  // every month from the oldest transaction to now, newest first
+  const oldest = (await q(sb.from('transactions').select('txn_date').order('txn_date').limit(1)))[0]?.txn_date || today();
+  const monthList = [];
+  for (let d = new Date(thisMonth + '-01T00:00:00'), stop = new Date(oldest.slice(0, 7) + '-01T00:00:00'); d >= stop; d.setMonth(d.getMonth() - 1))
+    monthList.push(d.toLocaleDateString('en-CA').slice(0, 7));
+  const mLabel = m => new Date(m + '-01T00:00:00').toLocaleDateString('en-AU', { month: 'short', year: 'numeric' });
+  const monthSummary = () => !state.months.size ? 'All months' : state.months.size === 1 ? mLabel([...state.months][0])
+    : `${state.months.size} months selected`;
   view.innerHTML = `<div class="card"><div class="formgrid">
-      <label>Month <input type="month" id="f-month" value="${state.month}"></label>
+      <div><span style="font-weight:700;font-size:.95rem">Months</span>
+        <details class="monthpick" id="f-month"><summary id="f-month-sum">${esc(monthSummary())}</summary>
+          <div class="monthlist">
+            <div class="row" style="margin-bottom:.4rem"><button type="button" class="small" id="m-none">All months</button><button type="button" class="small" id="m-3">Last 3</button><button type="button" class="small" id="m-6">Last 6</button><button type="button" class="small" id="m-12">Last 12</button></div>
+            ${(() => { let yr = ''; return monthList.map(m => { const y = m.slice(0, 4); const head = y !== yr ? `<div class="hint" style="margin-top:.3rem"><b>${y}</b></div>` : ''; yr = y;
+              return head + `<label class="mcheck"><input type="checkbox" value="${m}" ${state.months.has(m) ? 'checked' : ''}> ${esc(mLabel(m))}</label>`; }).join(''); })()}
+          </div></details></div>
       <label>Account <select id="f-acct"><option value="">All accounts</option>${cache.accounts.map(a => `<option value="${a.id}">${esc(a.name)}</option>`).join('')}</select></label>
       <label>Category <select id="f-cat"><option value="">All categories</option>${cache.categories.map(c => `<option value="${c.id}">${esc(c.name)}</option>`).join('')}</select></label>
       <label>Search <input type="search" id="f-search" placeholder="e.g. woolworths"></label>
@@ -459,7 +486,11 @@ async function transactions(opts = {}) {
     // fetch every matching row (in pages) so the totals cover the whole filter; show the first 500
     const build = () => {
       let query = sb.from('transactions').select('*').order('txn_date', { ascending: false }).order('created_at', { ascending: false });
-      if (state.month) { const [y, m] = state.month.split('-').map(Number); const end = new Date(y, m, 1).toLocaleDateString('en-CA'); query = query.gte('txn_date', state.month + '-01').lt('txn_date', end); }
+      if (state.months.size) {
+        const ranges = [...state.months].map(mm => { const [y, m] = mm.split('-').map(Number); const end = new Date(y, m, 1).toLocaleDateString('en-CA');
+          return `and(txn_date.gte.${mm}-01,txn_date.lt.${end})`; });
+        query = query.or(ranges.join(','));
+      }
       if (state.account) query = query.eq('account_id', state.account);
       if (state.oneoff) query = query.eq('is_one_off', true);
       if (state.uncategorised) query = query.is('category_id', null);
@@ -512,13 +543,20 @@ async function transactions(opts = {}) {
     });
     box.querySelectorAll('.mkrule').forEach(b => b.onclick = () => makeRule(rows[b.dataset.i], load));
   }
-  $('#f-month').onchange = e => { state.month = e.target.value; load(); };
+  const syncMonths = () => {
+    $('#f-month').querySelectorAll('input[type=checkbox]').forEach(c => { c.checked = state.months.has(c.value); });
+    $('#f-month-sum').textContent = monthSummary(); load();
+  };
+  $('#f-month').querySelectorAll('input[type=checkbox]').forEach(c => c.onchange = () => { c.checked ? state.months.add(c.value) : state.months.delete(c.value); syncMonths(); });
+  $('#m-none').onclick = () => { state.months.clear(); syncMonths(); };
+  for (const n of [3, 6, 12]) $('#m-' + n).onclick = () => { state.months = new Set(monthList.slice(0, n)); syncMonths(); };
+  document.addEventListener('click', e => { const d = $('#f-month'); if (d && d.open && !d.contains(e.target)) d.open = false; });
   $('#f-acct').onchange = e => { state.account = e.target.value; load(); };
   $('#f-cat').onchange = e => { state.category = e.target.value; load(); };
-  $('#f-all').onclick = () => { state.month = ''; $('#f-month').value = ''; load(); };
+  $('#f-all').onclick = () => { state.months.clear(); syncMonths(); };
   $('#f-clear').onclick = () => {
-    Object.assign(state, { month: today().slice(0, 7), account: '', category: '', uncategorised: false, oneoff: false, search: '' });
-    $('#f-month').value = state.month; $('#f-acct').value = ''; $('#f-cat').value = ''; $('#f-uncat').checked = false; $('#f-oneoff').checked = false; $('#f-search').value = ''; load();
+    Object.assign(state, { months: new Set([thisMonth]), account: '', category: '', uncategorised: false, oneoff: false, search: '' });
+    $('#f-acct').value = ''; $('#f-cat').value = ''; $('#f-uncat').checked = false; $('#f-oneoff').checked = false; $('#f-search').value = ''; syncMonths();
   };
   $('#f-uncat').onchange = e => { state.uncategorised = e.target.checked; load(); };
   $('#f-oneoff').onchange = e => { state.oneoff = e.target.checked; load(); };
@@ -809,7 +847,14 @@ async function bills() {
     $('#b-up').innerHTML = `<h2>Next 5 weeks</h2><p>Coming in ${money(ins)} · Going out ${money(outs)} (your share) · Difference <b>${money(ins - outs)}</b></p>
       ${up.length ? `<div class="tablewrap"><table><tbody>${up.map(u => `<tr class="${u.overdue ? 'overdue' : ''}"><td>${esc(fmtDate(u.due_date))}${u.overdue ? ' <span class="pill bad">overdue</span>' : ''}</td><td>${esc(u.name)}</td><td class="num ${u.direction === 'in' ? 'in' : ''}">${u.direction === 'in' ? '+' : '−'}${money(u.my_amount)}</td></tr>`).join('')}</tbody></table></div>` : '<p class="empty">Add your bills and income below.</p>'}`;
   };
-  const drawList = () => renderCrud($('#b-list'), 'recurring_items', { onChange: async () => { await drawUpcoming(); await drawList(); } });
+  let items = [];
+  const drawList = async () => {
+    items = await renderCrud($('#b-list'), 'recurring_items', {
+      onChange: async () => { await drawUpcoming(); await drawList(); },
+      extra: (r, i) => r.direction === 'out' && r.is_active ? `<button class="small b-paid" data-i="${i}">Mark paid</button>` : '',
+    });
+    $('#b-list').querySelectorAll('.b-paid').forEach(b => b.onclick = () => { const r = items[b.dataset.i]; markPaid(r.id, r.next_due, bills); });
+  };
   await Promise.all([drawUpcoming(), drawList()]);
 }
 
