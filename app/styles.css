@@ -355,3 +355,13 @@ button.is-done::before { content: '✓ '; }
   .tabs-more { display: none; }
 }
 .more-sheet .signout-m { grid-column: 1 / -1; border-color: var(--bad); color: var(--bad); }
+/* forecast line */
+.viz-neg { fill: var(--bad-bg); }
+.viz-zero { stroke: var(--bad); stroke-width: 1; stroke-dasharray: 4 3; }
+.viz-cross { stroke: #9aa39f; stroke-width: 1; }
+html[data-theme="dark"] .viz-neg { fill: rgba(179, 38, 30, .22); }
+.ins-list { list-style: none; margin: 0; padding: 0; }
+.ins-list li { display: grid; grid-template-columns: 1fr auto; gap: .2rem 1rem; padding: .6rem 0; border-top: 1px solid var(--line); }
+.ins-list li:first-child { border-top: 0; }
+.ins-list .hint { grid-column: 1 / -1; margin: 0; }
+.ins-amt { font-weight: 700; font-variant-numeric: tabular-nums; text-align: right; }

@@ -108,3 +108,55 @@ export function hbarChart(el, { items, color = SERIES.blue, fmt = moneyRound, ma
       ${i.note ? `<div class="hbar-note">${esc(i.note)}</div>` : ''}
     </div>`).join('')}</div>`;
 }
+
+/**
+ * Single-series line over dates with a $0 reference line (for a balance forecast).
+ * opts: { points: [{ label, tipLabel?, value, extra? }], fmt, height, title, color }
+ * The stretch below $0 is shaded; hover shows a crosshair and tooltip.
+ */
+export function lineChart(el, opts) {
+  const draw = () => {
+    const { points, fmt = moneyRound, height = 240, color = SERIES.blue } = opts;
+    const W = Math.max(300, el.clientWidth || 600), H = height;
+    const m = { l: 56, r: 12, t: 12, b: 28 };
+    const pw = W - m.l - m.r, ph = H - m.t - m.b;
+    const vals = points.map(p => p.value);
+    let hi = Math.max(0, ...vals), lo = Math.min(0, ...vals);
+    const span = niceMax(Math.max(1, hi - lo));
+    const step = span / 4;
+    hi = Math.ceil(hi / step) * step; lo = Math.floor(lo / step) * step;
+    if (hi === lo) hi = lo + step;
+    const n = points.length;
+    const x = i => m.l + (n === 1 ? pw / 2 : (pw * i) / (n - 1));
+    const y = v => m.t + ph - ((v - lo) / (hi - lo)) * ph;
+    let svg = `<svg width="${W}" height="${H}" role="img" aria-label="${esc(opts.title || 'Chart')}">`;
+    if (lo < 0) svg += `<rect x="${m.l}" y="${y(0)}" width="${pw}" height="${m.t + ph - y(0)}" class="viz-neg"/>`;
+    for (let t = lo; t <= hi + 1e-9; t += step) svg += `<line x1="${m.l}" x2="${W - m.r}" y1="${y(t)}" y2="${y(t)}" class="viz-grid"/><text x="${m.l - 8}" y="${y(t) + 4}" text-anchor="end" class="viz-tick">${moneyCompact(t)}</text>`;
+    svg += `<line x1="${m.l}" x2="${W - m.r}" y1="${y(0)}" y2="${y(0)}" class="viz-zero"/>`;
+    const every = Math.ceil(n / Math.floor(pw / 60));
+    points.forEach((p, i) => { if (i % every === 0) svg += `<text x="${x(i)}" y="${H - 8}" text-anchor="middle" class="viz-tick">${esc(p.label)}</text>`; });
+    svg += `<path d="${points.map((p, i) => `${i ? 'L' : 'M'}${x(i).toFixed(1)},${y(p.value).toFixed(1)}`).join('')}" fill="none" stroke="${color}" stroke-width="2" stroke-linejoin="round" stroke-linecap="round"/>`;
+    // mark the lowest point
+    const li = vals.indexOf(Math.min(...vals));
+    svg += `<circle cx="${x(li)}" cy="${y(vals[li])}" r="5" fill="${color}" stroke="var(--card)" stroke-width="2"/>`;
+    svg += `<line class="viz-cross" x1="0" x2="0" y1="${m.t}" y2="${m.t + ph}" style="display:none"/><circle class="viz-dot" r="5" fill="${color}" stroke="var(--card)" stroke-width="2" style="display:none"/>`;
+    svg += `<rect class="viz-hit" x="${m.l}" y="${m.t}" width="${pw}" height="${ph}" fill="transparent"/></svg>`;
+    el.querySelector('.viz-plot').innerHTML = svg;
+    const hit = el.querySelector('.viz-hit'), cross = el.querySelector('.viz-cross'), dot = el.querySelector('.viz-dot');
+    const at = e => {
+      const r = hit.getBoundingClientRect();
+      const i = Math.max(0, Math.min(n - 1, Math.round(((e.clientX - r.left) / r.width) * (n - 1))));
+      const p = points[i];
+      cross.setAttribute('x1', x(i)); cross.setAttribute('x2', x(i)); cross.style.display = '';
+      dot.setAttribute('cx', x(i)); dot.setAttribute('cy', y(p.value)); dot.style.display = '';
+      showTip(`<b>${esc(p.tipLabel || p.label)}</b><div>Balance <b>${fmt(p.value)}</b></div>${p.extra || ''}`, e);
+    };
+    hit.addEventListener('mousemove', at); hit.addEventListener('click', at);
+    hit.addEventListener('mouseleave', () => { cross.style.display = 'none'; dot.style.display = 'none'; hideTip(); });
+  };
+  el.innerHTML = `<div class="viz-plot"></div>
+    <details class="viz-table"><summary>Show as table</summary><div class="tablewrap"><table><thead><tr><th>Day</th><th class="num">Forecast balance</th></tr></thead>
+      <tbody>${opts.points.map(p => `<tr><td>${esc(p.tipLabel || p.label)}</td><td class="num">${(opts.fmt || moneyRound)(p.value)}</td></tr>`).join('')}</tbody></table></div></details>`;
+  draw();
+  if (window.ResizeObserver) { let w = el.clientWidth; new ResizeObserver(() => { if (Math.abs(el.clientWidth - w) > 20) { w = el.clientWidth; draw(); } }).observe(el); }
+}

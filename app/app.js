@@ -1,9 +1,9 @@
 import { createClient } from 'https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2/+esm';
-import { SUPABASE_URL, SUPABASE_PUBLISHABLE_KEY } from './config.js?v=202611230055';
-import { parseBankCsv, parseWestpacActivity, splitAccounts, linesFromItems } from './csv.js?v=202611230055';
-import { readPayslip, toLines } from './payslip.js?v=202611230055';
-import { toast, softDelete, busy, friendlyError, watchOnline, info, wireInfoTips, skeleton, wireInstall, applyPrefs, settingsMenu, prefs, setPref, store } from './ui.js?v=202611230055';
-import { columnChart, hbarChart, SERIES, moneyRound, moneyCompact } from './charts.js?v=202611230055';
+import { SUPABASE_URL, SUPABASE_PUBLISHABLE_KEY } from './config.js?v=202611230115';
+import { parseBankCsv, parseWestpacActivity, splitAccounts, linesFromItems } from './csv.js?v=202611230115';
+import { readPayslip, toLines } from './payslip.js?v=202611230115';
+import { toast, softDelete, busy, friendlyError, watchOnline, info, wireInfoTips, skeleton, wireInstall, applyPrefs, settingsMenu, prefs, setPref, store } from './ui.js?v=202611230115';
+import { columnChart, hbarChart, lineChart, SERIES, moneyRound, moneyCompact } from './charts.js?v=202611230115';
 
 const sb = createClient(SUPABASE_URL, SUPABASE_PUBLISHABLE_KEY);
 const $ = (s, el = document) => el.querySelector(s);
@@ -324,13 +324,13 @@ function wireCatSelect(sel, onPick, kindHint) {
 }
 
 // ---------- generic add / edit dialog ----------
-function openForm(key, row = null, fixed = {}) {
+function openForm(key, row = null, fixed = {}, prefill = null) {
   const def = TABLES[key];
   const table = def.table || key;
   return new Promise(resolve => {
     const dlg = document.createElement('dialog');
     const fieldsHtml = def.fields.filter(f => !(f.k in fixed)).map(f => {
-      let val = row ? row[f.k] : (typeof f.default === 'function' ? f.default() : f.default);
+      let val = row ? row[f.k] : prefill && f.k in prefill ? prefill[f.k] : (typeof f.default === 'function' ? f.default() : f.default);
       const req = f.required ? 'required' : '';
       const hint = f.hint ? `<span class="hint">${esc(f.hint)}</span>` : '';
       if (f.type === 'checkbox') return `<label><input type="checkbox" name="${f.k}" ${val ? 'checked' : ''}> ${esc(f.label)} ${hint}</label>`;
@@ -572,7 +572,8 @@ async function dashboard() {
         <div class="tile-sub">${esc(pName)}${sum(debtRows, x => x.arrears_amount * shareFor(x.my_share_pct)) ? ` · overdue ${moneyRound(sum(debtRows, x => x.arrears_amount * shareFor(x.my_share_pct)))}` : ''}</div></div>
     </div>
 
-    ${uncatCount || debt?.hardship_to_request || followups.length || s ? `<div class="chips">
+    ${true ? `<div class="chips">
+      <button class="chip" data-go="insights">📈 4-week forecast & insights →</button>
       ${uncatCount ? `<button class="chip" data-go="sort"><b>${uncatCount}</b> transactions to sort →</button>` : ''}
       ${debt?.hardship_to_request ? `<button class="chip warn" data-go="debts"><b>${debt.hardship_to_request}</b> hardship request${debt.hardship_to_request > 1 ? 's' : ''} to make →</button>` : ''}
       ${followups.length ? `<button class="chip warn" data-go="debts"><b>${followups.length}</b> creditor follow-up${followups.length > 1 ? 's' : ''} due →</button>` : ''}
@@ -1056,6 +1057,11 @@ async function importView() {
         }
         results.push(`<li><b>${esc(j.file.name)}</b> → ${esc(refName('accounts', accountId))}: ${tot.inserted} new, ${tot.duplicates} already there, ${tot.linked_to_bills} matched to bills, ${tot.shared_added} added to shared costs</li>`);
       }
+      let extra = '';
+      try { const r = await sb.rpc('refresh_insights'); const d = r.data || {};
+        if (d.bounces_tagged) extra += `<li>${d.bounces_tagged} bounced payment${d.bounces_tagged > 1 ? 's' : ''} found and set aside (not counted as income or spending)</li>`;
+        if (d.prices_updated) extra += `<li>${d.prices_updated} bill amount${d.prices_updated > 1 ? 's' : ''} updated to the new price — see the alerts on Home</li>`; } catch { /* insights are a bonus */ }
+      results.push(extra);
       pv.innerHTML = `<p class="msg"><b>Done.</b></p><ul>${results.join('')}</ul>
         <p>Next: <button class="link" id="go-uncat2">sort the uncategorised transactions</button>.</p>`;
       $('#go-uncat2').onclick = () => show('sort');
@@ -1190,6 +1196,112 @@ async function debts() {
     $('#d-list').querySelectorAll('.log').forEach(b => b.onclick = () => showLog(current[b.dataset.i]));
   };
   await Promise.all([top(), list()]);
+}
+
+// ---------- INSIGHTS (worked out from the transactions; refreshed every morning and after each import) ----------
+const SUB_FREQ = { weekly: 'weekly', fortnightly: 'fortnightly', 'every 3 weeks': 'every 3 weeks', monthly: 'monthly', quarterly: 'quarterly', yearly: 'yearly' };
+const shortDate = d => new Date(d + 'T00:00:00').toLocaleDateString('en-AU', { weekday: 'short', day: 'numeric', month: 'short' });
+async function insightsView() {
+  view.innerHTML = `<div class="page-head"><div><h1 class="page-title">Insights</h1>
+      <p class="hint">Worked out automatically from your transactions — refreshed every morning and after each import. Household figures.</p></div></div>
+    <div class="tiles" id="n-tiles"></div>
+    <section class="card"><div class="sec-head"><div><h2>Next 4 weeks</h2><p class="hint" id="n-fc-hint"></p></div></div><div id="n-fc"></div><p class="hint" id="n-fc-note"></p></section>
+    <div class="grid2">
+      <section class="card" id="n-bounce"></section>
+      <section class="card" id="n-fees"></section>
+    </div>
+    <section class="card" id="n-subs"></section>
+    <div class="grid2">
+      <section class="card" id="n-price"></section>
+      <section class="card" id="n-spike"></section>
+    </div>
+    <section class="card" id="n-bnpl"></section>
+    <section class="card" id="n-dup"></section>`;
+  try { await sb.rpc('refresh_insights'); } catch { /* still show what we have */ }
+  const ins = await q(sb.rpc('insights', { p_days: 28 }));
+  const fc = ins.forecast, days = fc.days || [];
+  const low = days.reduce((a, d) => (!a || Number(d.bal) < Number(a.bal) ? d : a), null);
+  const nextIn = fc.next_income;
+  const untilPay = days.filter(d => !nextIn || d.d < nextIn);
+  const safe = untilPay.length ? Math.max(0, Math.min(Number(fc.start), ...untilPay.map(d => Number(d.bal)))) : Number(fc.start);
+  const overdueTotal = sum(fc.overdue, o => o.amount);
+  $('#n-tiles').innerHTML = `
+    <div class="tile"><div class="tile-label">Money in everyday accounts ${info('CommBank and Westpac Choice added together, as at your last import. Loan accounts are not included.')}</div><div class="tile-value">${moneyRound(fc.start)}</div><div class="tile-sub">household, now</div></div>
+    <div class="tile ${low && low.bal < 0 ? 'bad' : 'good'}"><div class="tile-label">Lowest point, next 4 weeks ${info('Your balance today, plus income and bills when they are due, minus your usual everyday spending each day. Below $0 means overdrawn fees ($15 each) unless you move money or spend less.')}</div><div class="tile-value">${low ? moneyRound(low.bal) : '—'}</div><div class="tile-sub">${low ? 'around ' + esc(shortDate(low.d)) : ''}</div></div>
+    <div class="tile ${safe > 0 ? 'good' : 'warn'}"><div class="tile-label">Safe to spend before next pay ${info('How much extra you could spend today and still not go below $0 before the next income arrives — after bills and your usual daily spending.')}</div><div class="tile-value">${moneyRound(safe)}</div><div class="tile-sub">${nextIn ? 'next money in ' + esc(shortDate(nextIn)) : 'no regular income set up'}</div></div>
+    <div class="tile"><div class="tile-label">Everyday spending ${info('Average per day over the last 90 days of spending that isn’t a regular bill: shopping, food, fuel, Afterpay and so on. One-offs you have marked are left out.')}</div><div class="tile-value">${moneyRound(fc.daily_spend)}<small> /day</small></div><div class="tile-sub">about ${moneyRound(fc.daily_spend * 7)} a week</div></div>`;
+  const firstNeg = days.find(d => Number(d.bal) < 0);
+  $('#n-fc-hint').textContent = low && low.bal < 0
+    ? `Likely to go below $0 from around ${shortDate(firstNeg.d)} (lowest ${moneyRound(low.bal)} around ${shortDate(low.d)}). Spending about ${moneyRound(Math.ceil(-low.bal / (days.indexOf(low) + 1) / 5) * 5)} a day less, or moving money in before then, avoids overdrawn fees.`
+    : 'Your balance stays above $0 on the current plan.';
+  lineChart($('#n-fc'), { title: 'Forecast balance', points: days.map(d => ({ value: Number(d.bal),
+    label: new Date(d.d + 'T00:00:00').toLocaleDateString('en-AU', { day: 'numeric', month: 'short' }), tipLabel: shortDate(d.d),
+    extra: (d.items || []).map(i => `<div>${i.amount > 0 ? '+' : '−'}${esc(money(Math.abs(i.amount)))} ${esc(i.name)}</div>`).join('') })) });
+  $('#n-fc-note').innerHTML = `Includes regular bills and income paid into everyday accounts, and ${moneyRound(fc.daily_spend)} a day of usual spending. Board paid straight into the loan isn’t counted.`
+    + (fc.overdue.length ? ` <b>Not included: ${fc.overdue.length} overdue item${fc.overdue.length > 1 ? 's' : ''} (${moneyRound(overdueTotal)})</b> — ${fc.overdue.map(o => esc(o.name)).join(', ')}.` : '');
+
+  // bounced payments
+  const b = ins.bounces || [];
+  $('#n-bounce').innerHTML = `<div class="sec-head"><div><h2>Bounced payments</h2><p class="hint">Direct debits returned for lack of funds · last 12 months</p></div></div>
+    ${b.length ? `<ul class="ins-list">${b.map(x => `<li><b>${esc(x.payee.replace(/\b\w+/g, w => w[0] + w.slice(1).toLowerCase()) || 'Unknown')}</b><span class="ins-amt">${x.n}×</span>
+      <p class="hint">${moneyRound(x.total)} returned · last ${esc(fmtDate(x.last))}${x.recent ? ` · <span class="pill bad">${x.recent} in the last 90 days</span>` : ''}</p></li>`).join('')}</ul>
+      <p class="hint">These are set aside automatically, so they don’t count as income or spending. Each bounce can bring a dishonour fee from the company — if one keeps bouncing, ask them to move the debit to the day after payday.</p>`
+      : '<p class="empty">No bounced payments. 👍</p>'}`;
+
+  // fees
+  const fees = ins.fees.by_type || [], od = ins.fees.days_overdrawn || [];
+  $('#n-fees').innerHTML = `<div class="sec-head"><div><h2>Bank fees</h2><p class="hint">Last 12 months</p></div></div>
+    ${fees.length ? `<ul class="ins-list">${fees.map(f => `<li><b>${esc(f.kind)}</b><span class="ins-amt">${money(f.total)}</span><p class="hint">${f.n} charge${f.n > 1 ? 's' : ''}</p></li>`).join('')}</ul>` : '<p class="empty">No bank fees.</p>'}
+    ${od.length ? `<p class="hint">Days overdrawn: ${od.map(o => `${esc(o.account)} <b>${o.days}</b> (lowest ${money(o.lowest)})`).join(' · ')}.</p>` : ''}
+    ${fees.some(f => f.kind === 'Loan package fee') ? '<p class="hint">The loan package fee is worth questioning: ask Westpac whether a no-fee loan with the same rate is available, or what the package actually saves you.</p>' : ''}`;
+
+  // subscriptions & repeat charges
+  const subs = ins.subscriptions || [];
+  const act = subs.filter(x => x.active), untracked = act.filter(x => !x.tracked);
+  $('#n-subs').innerHTML = `<div class="sec-head"><div><h2>Subscriptions & repeat charges</h2><p class="hint">Same amount to the same place at regular intervals · ${act.length} still active, about ${moneyRound(sum(act, x => x.yearly))} a year${untracked.length ? ` · <b>${untracked.length} not set up as bills</b>` : ''}</p></div></div>
+    ${subs.length ? `<div class="tablewrap"><table class="list"><thead><tr><th>Paid to</th><th class="num">Amount</th><th>How often</th><th class="num">Per year</th><th>Last charged</th><th></th></tr></thead><tbody>
+      ${subs.map((x, i) => `<tr class="${x.active ? '' : 'muted'}"><td data-label="Paid to">${esc(x.payee.replace(/\b\w+/g, w => w.length <= 4 && /^[A-Z]+$/.test(w) && !/^(BIG|THE|AND)$/.test(w) ? w : w[0] + w.slice(1).toLowerCase()))}</td><td class="num" data-label="Amount">${money(x.avg)}</td><td data-label="How often">${esc(SUB_FREQ[x.freq] || x.freq)} <span class="hint">(${x.n}×)</span></td>
+        <td class="num" data-label="Per year">${moneyRound(x.yearly)}</td><td data-label="Last charged">${esc(fmtDate(x.last))}</td>
+        <td>${!x.active ? '<span class="pill">stopped</span>' : x.tracked ? '<span class="pill good">a bill</span>' : `<button class="small add-bill" data-i="${i}">Add as bill</button>`}</td></tr>`).join('')}
+      </tbody></table></div><p class="hint">Not sure what one is? Search it in Transactions. Apple charges are app or iCloud subscriptions — check Settings → your name → Subscriptions on the iPhone to cancel.</p>`
+      : '<p class="empty">No repeat charges found yet.</p>'}`;
+  $('#n-subs').querySelectorAll('.add-bill').forEach(btn => btn.onclick = async () => {
+    const x = subs[btn.dataset.i];
+    const freq = x.freq === 'every 3 weeks' ? 'monthly' : x.freq;
+    const next = new Date(x.last + 'T00:00:00'); next.setDate(next.getDate() + Number(x.gap));
+    while (next.toLocaleDateString('en-CA') < today()) next.setDate(next.getDate() + Number(x.gap));
+    const name = x.payee.replace(/\b\w+/g, w => w[0] + w.slice(1).toLowerCase());
+    const ok = await openForm('recurring_items', null, { direction: 'out' }, { name, amount: x.avg, frequency: freq, next_due: next.toLocaleDateString('en-CA'),
+      match_text: x.payee.split(' ').slice(0, 2).join(' '), is_shared: true, my_share_pct: 50, is_active: true });
+    if (ok) insightsView();
+  });
+
+  // price changes
+  const pc = ins.price_changes || [];
+  $('#n-price').innerHTML = `<div class="sec-head"><div><h2>Bills that changed price</h2><p class="hint">First payment this year vs now · bill amounts update themselves</p></div></div>
+    ${pc.length ? `<ul class="ins-list">${pc.map(x => { const up = x.now_amt > x.first_amt, pct = Math.round((x.now_amt / x.first_amt - 1) * 100);
+      return `<li><b>${esc(x.name)}</b><span class="ins-amt">${money(x.first_amt)} → ${money(x.now_amt)}</span>
+      <p class="hint"><span class="pill ${up ? 'bad' : 'good'}">${up ? '▲' : '▼'} ${Math.abs(pct)}%</span> ${up ? 'Worth a call to ask for a better price or a hardship rate.' : ''}</p></li>`; }).join('')}</ul>` : '<p class="empty">No price changes found.</p>'}`;
+
+  // spending spikes
+  const sp = ins.spikes || [];
+  $('#n-spike').innerHTML = `<div class="sec-head"><div><h2>Higher than usual this month</h2><p class="hint">So far this month vs the average of the last 3 months</p></div></div>
+    ${sp.length ? `<div id="n-spike-chart"></div>` : '<p class="empty">Nothing unusual this month.</p>'}`;
+  if (sp.length) hbarChart($('#n-spike-chart'), { items: sp.map(x => ({ label: x.category, value: Number(x.mtd), note: `usually about ${moneyRound(x.avg3)} a month` })), color: SERIES.orange });
+
+  // BNPL load
+  const bn = (ins.bnpl || []).filter(x => x.bnpl || x.income);
+  const last6 = bn.slice(-6), pct6 = sum(last6, x => x.income) ? Math.round(sum(last6, x => x.bnpl) / sum(last6, x => x.income) * 100) : null;
+  $('#n-bnpl').innerHTML = `<div class="sec-head"><div><h2>Afterpay & buy-now-pay-later</h2><p class="hint">Repayments each month next to income${pct6 != null ? ` · over the last 6 months BNPL took <b>${pct6}%</b> of income` : ''}</p></div></div><div id="n-bnpl-chart"></div>
+    <p class="hint">BNPL repayments come out automatically and are the biggest part of your everyday spending. Pausing new purchases for a few weeks is the quickest way to stop the balance dipping below $0.</p>`;
+  if (bn.length) columnChart($('#n-bnpl-chart'), { title: 'BNPL vs income', labels: bn.map(x => new Date(x.month + '-01T00:00:00').toLocaleDateString('en-AU', { month: 'short' })),
+    tipLabels: bn.map(x => new Date(x.month + '-01T00:00:00').toLocaleDateString('en-AU', { month: 'long', year: 'numeric' })),
+    series: [{ name: 'Income', color: SERIES.blue, values: bn.map(x => Number(x.income) || 0) }, { name: 'BNPL repayments', color: SERIES.orange, values: bn.map(x => Number(x.bnpl) || 0) }] });
+
+  // possible double charges
+  const dup = ins.duplicates || [];
+  $('#n-dup').innerHTML = `<div class="sec-head"><div><h2>Possible double charges</h2><p class="hint">Same amount, same place, a day apart · last 12 months</p></div></div>
+    ${dup.length ? `<ul class="ins-list">${dup.map(x => `<li><b>${esc(x.description)}</b><span class="ins-amt">${money(x.amount)} × 2</span><p class="hint">${esc(fmtDate(x.d))} · ${esc(x.account)} — if you only bought it once, ask for a refund (for Apple: reportaproblem.apple.com).</p></li>`).join('')}</ul>` : '<p class="empty">None found.</p>'}`;
 }
 
 // ---------- TAX (board income & claimable costs, per person) ----------
@@ -1707,7 +1819,7 @@ async function setup() {
 }
 
 // ---------- navigation & auth ----------
-const VIEWS = { dashboard, budget, bills, income, debts, transactions, sort: sortView, import: importView, shared, pay: payView, tax: taxView, setup };
+const VIEWS = { dashboard, insights: insightsView, budget, bills, income, debts, transactions, sort: sortView, import: importView, shared, pay: payView, tax: taxView, setup };
 async function updateSortBadge() {
   const { count } = await sb.from('transactions').select('id', { count: 'exact', head: true }).is('category_id', null);
   for (const id of ['#sort-badge', '#sort-badge-m']) { const b = $(id); if (b) { b.textContent = count || ''; b.classList.toggle('hidden', !count); } }

@@ -1,0 +1,13 @@
+-- 017 (applied live as 016c, 016d, 017, 017b)
+--  * payee_key(): only strips tokens with 3+ digits and dd/mm dates, so names like "2Checkout.com" survive.
+--  * subscriptions_for(owner): repeat charges grouped by payee AND exact amount (finds each Apple subscription
+--    separately); labels weekly / fortnightly / every 3 weeks / monthly / quarterly / yearly; flags active,
+--    and whether it is already set up as a bill. insights_for() now calls it for its 'subscriptions' key.
+--  * daily_checks(): for every household also runs tag_bounces, apply_price_changes and insights_for, then raises:
+--      fc:<iso-week>      "Money may run short around …"  (re-worked each morning; a dismissed one stays dismissed)
+--      bounce:<txn id>    "Payment bounced: …"            (returns in the last 14 days)
+--      dup:<txn id>       "Possible double charge: …"     (last 14 days)
+--      spike:<cat>:<YYYY-MM> "Spending up: …"             (month-to-date > 1.3× 3-month average and > $75 over)
+--    and returns insight_alerts in its JSON.
+--  * apply_price_changes(): the "ask for a better price" advice only appears for increases.
+-- Full definitions are in the database (pg_get_functiondef); this file records the change.

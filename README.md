@@ -14,6 +14,7 @@ debt register with creditor contact log, shared costs with ex-partner, and a das
 | Screen | What it's for |
 |---|---|
 | **Home** | Alerts, four key numbers, what's coming up in the next 14 days (with **Paid** buttons), where the money went (this month / last month / 3-month average), and a 12-month money in vs out chart |
+| **Insights** | 4-week balance forecast (bills + income + usual daily spending) with lowest point and safe-to-spend before next pay; bounced payments; bank fees and days overdrawn; subscriptions & repeat charges with **Add as bill**; bills that changed price; categories higher than usual; Afterpay/BNPL vs income; possible double charges |
 | **Budget** | Household / Michael / Taslyn: regular income against bills and debt repayments, what's left each month, and average everyday spending |
 | **Bills** | Regular payments including loan repayments: per-month totals, due in the next 5 weeks, the full list |
 | **Income** | Regular money coming in: per-month totals, expected in the next 5 weeks, the full list |
@@ -78,6 +79,7 @@ Starter categories and ~30 auto-categorising rules are added automatically.
 ## Automation (running now)
 - **Every import:** transactions sorted by rules; bills/income matched and due dates moved on; loan debts updated from the loan account balance.
 - **Every morning at 6am:** alerts on the dashboard for bills due within 3 days, bills not seen paid, income that hasn't arrived, overdrawn accounts, creditor follow-ups and hardship arrangements about to end.
+- **Also every morning, and after every import:** bounced direct debits (and the payment they reverse) are set aside so they don't count as income or spending, and the bill goes back to owing; bill amounts update when the bank shows a new price twice in a row; alerts for money likely to run short in the next 14 days, a payment that bounced, a possible double charge, and a category well above its usual month.
 - Bills and income marked "Auto-detected" were found from your transactions — edit or delete any that are wrong.
 
 ## Coming next
