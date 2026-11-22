@@ -191,6 +191,52 @@ function cell(def, row, k) {
   return esc(label(v));
 }
 
+// ---------- categories: picker with "+ New category…" ----------
+function catOptions(selected, { blank = '— choose —' } = {}) {
+  const groups = { expense: 'Spending', income: 'Income', transfer: 'Transfers (not counted)' };
+  return `<option value="">${blank}</option>` + Object.entries(groups).map(([kind, lbl]) => {
+    const list = cache.categories.filter(c => c.kind === kind);
+    return list.length ? `<optgroup label="${lbl}">${list.map(c => `<option value="${c.id}" ${c.id === selected ? 'selected' : ''}>${esc(c.name)}</option>`).join('')}</optgroup>` : '';
+  }).join('') + `<option value="__new">+ New category…</option>`;
+}
+function newCategoryDialog(defaultKind = 'expense') {
+  return new Promise(resolve => {
+    const dlg = document.createElement('dialog');
+    dlg.innerHTML = `<form method="dialog"><h2>New category</h2>
+      <label>Name <input name="n" required maxlength="60" placeholder="e.g. Pet costs"></label>
+      <label>Kind <select name="k"><option value="expense">Spending</option><option value="income">Income</option><option value="transfer">Transfer (not counted as income or spending)</option></select></label>
+      <label><input type="checkbox" name="e"> Essential (must-pay)</label>
+      <label>Monthly budget (optional) <input type="number" step="0.01" name="b"></label>
+      <div class="row"><button class="primary" value="save">Create</button><button value="cancel" formnovalidate>Cancel</button></div></form>`;
+    document.body.appendChild(dlg);
+    const f = $('form', dlg); f.k.value = defaultKind;
+    let done = false;
+    f.addEventListener('submit', async e => {
+      if (e.submitter?.value !== 'save') return;
+      e.preventDefault();
+      try {
+        const row = await q(sb.from('categories').insert({ name: f.n.value.trim(), kind: f.k.value, is_essential: f.e.checked,
+          monthly_budget: f.b.value === '' ? null : Number(f.b.value) }).select().single());
+        await loadLookups(); toast(`Category "${row.name}" created`); done = true; dlg.close(); resolve(row.id);
+      } catch { /* e.g. name already exists — toast shown */ }
+    });
+    dlg.addEventListener('close', () => { dlg.remove(); if (!done) resolve(null); });
+    dlg.showModal();
+  });
+}
+// Wire a category <select>: handles "+ New category…" then calls onPick(id)
+function wireCatSelect(sel, onPick, kindHint) {
+  let prev = sel.value === '__new' ? '' : sel.value;
+  sel.onchange = async () => {
+    if (sel.value === '__new') {
+      const id = await newCategoryDialog(kindHint);
+      if (!id) { sel.value = prev; return; }
+      sel.innerHTML = catOptions(id); sel.value = id;
+    }
+    prev = sel.value; await onPick(sel.value || null);
+  };
+}
+
 // ---------- generic add / edit dialog ----------
 function openForm(key, row = null, fixed = {}) {
   const def = TABLES[key];
@@ -202,6 +248,7 @@ function openForm(key, row = null, fixed = {}) {
       const hint = f.hint ? `<span class="hint">${esc(f.hint)}</span>` : '';
       if (f.type === 'checkbox') return `<label><input type="checkbox" name="${f.k}" ${val ? 'checked' : ''}> ${esc(f.label)} ${hint}</label>`;
       if (f.type === 'select' || f.type === 'ref') {
+        if (f.type === 'ref' && f.ref === 'categories') return `<label>${esc(f.label)} ${hint}<select name="${f.k}" ${req} data-cat>${catOptions(val, { blank: '— none —' })}</select></label>`;
         const opts = f.type === 'ref' ? refOptions[f.ref]() : f.options.map(o => [o, label(o)]);
         const blank = f.type === 'ref' ? `<option value="">— none —</option>` : '';
         return `<label>${esc(f.label)} ${hint}<select name="${f.k}" ${req}>${blank}${opts.map(([v, t]) => `<option value="${esc(v)}" ${String(v) === String(val ?? '') ? 'selected' : ''}>${esc(t)}</option>`).join('')}</select></label>`;
@@ -215,6 +262,7 @@ function openForm(key, row = null, fixed = {}) {
       <div class="row"><button class="primary" value="save">Save</button><button value="cancel" formnovalidate>Cancel</button></div></form>`;
     document.body.appendChild(dlg);
     const form = $('form', dlg);
+    form.querySelectorAll('select[data-cat]').forEach(sel => wireCatSelect(sel, () => {}));
     form.addEventListener('submit', async (e) => {
       if (e.submitter?.value !== 'save') return;
       e.preventDefault();
@@ -286,7 +334,7 @@ async function dashboard() {
   ]);
   const { count: uncatCount } = await sb.from('transactions').select('id', { count: 'exact', head: true }).is('category_id', null);
   const isLoan = a => ['loan', 'mortgage', 'credit_card'].includes(a.account_type);
-  const accBal = a => Number(a.last_statement_balance ?? a.calculated_balance ?? 0);
+  const accBal = a => Number(a.calculated_balance ?? 0);
   const cashAccts = bal.filter(a => !isLoan(a));
   const totalCash = cashAccts.reduce((s, a) => s + accBal(a) * (a.is_joint ? Number(a.my_share_pct ?? 100) / 100 : 1), 0);
   const jointAccts = cashAccts.filter(a => a.is_joint);
@@ -340,7 +388,7 @@ async function dashboard() {
           : '<p class="empty">Import a statement to see this.</p>'}
       </div>
     </div>`;
-  $('#go-uncat')?.addEventListener('click', () => show('transactions', { uncategorised: true }));
+  $('#go-uncat')?.addEventListener('click', () => show('sort'));
   view.querySelectorAll('.dismiss').forEach(b => b.onclick = async () => {
     await q(sb.from('alerts').update({ dismissed: true }).eq('id', alerts[b.dataset.i].id));
     b.closest('tr').remove(); if (!view.querySelector('.dismiss')) $('#alerts')?.remove();
@@ -403,15 +451,17 @@ async function transactions(opts = {}) {
       <label>Category <select id="f-cat"><option value="">All categories</option>${cache.categories.map(c => `<option value="${c.id}">${esc(c.name)}</option>`).join('')}</select></label>
       <label>Search <input type="search" id="f-search" placeholder="e.g. woolworths"></label>
       <label style="align-self:end"><input type="checkbox" id="f-uncat" ${state.uncategorised ? 'checked' : ''}> Only uncategorised</label>
+      <label style="align-self:end"><input type="checkbox" id="f-oneoff"> Only one-offs</label>
       <div class="row" style="align-self:end;margin-bottom:.6rem"><button type="button" id="f-all">All months</button><button type="button" id="f-clear">Clear filters</button></div>
     </div></div><div class="card" id="txlist"></div>`;
-  const catOpts = (sel) => `<option value="">— choose —</option>` + cache.categories.map(c => `<option value="${c.id}" ${c.id === sel ? 'selected' : ''}>${esc(c.name)}</option>`).join('');
+  const catOpts = (sel) => catOptions(sel);
   async function load() {
     // fetch every matching row (in pages) so the totals cover the whole filter; show the first 500
     const build = () => {
       let query = sb.from('transactions').select('*').order('txn_date', { ascending: false }).order('created_at', { ascending: false });
       if (state.month) { const [y, m] = state.month.split('-').map(Number); const end = new Date(y, m, 1).toLocaleDateString('en-CA'); query = query.gte('txn_date', state.month + '-01').lt('txn_date', end); }
       if (state.account) query = query.eq('account_id', state.account);
+      if (state.oneoff) query = query.eq('is_one_off', true);
       if (state.uncategorised) query = query.is('category_id', null);
       else if (state.category) query = query.eq('category_id', state.category);
       if (state.search) query = query.ilike('description', `%${state.search.replace(/[%_,()]/g, '')}%`);
@@ -429,20 +479,26 @@ async function transactions(opts = {}) {
     const xIn = sum(nonTr.filter(r => r.amount > 0), r => r.amount), xOut = -sum(nonTr.filter(r => r.amount < 0), r => r.amount);
     const totalsRow = `<tfoot><tr class="total"><td><b>Total</b><br><span class="hint">${all.length} transaction(s)</span></td>
       <td>Money in ${money(tIn)} · Money out ${money(tOut)}${transferIds.size && nonTr.length !== all.length ? `<br><span class="hint">Excluding transfers: in ${money(xIn)} · out ${money(xOut)} · net ${money(xIn - xOut)}</span>` : ''}</td>
-      <td class="num"><b>${money(tIn - tOut)}</b></td><td colspan="3"></td></tr></tfoot>`;
+      <td class="num"><b>${money(tIn - tOut)}</b></td><td colspan="4"></td></tr></tfoot>`;
     const box = $('#txlist');
     box.innerHTML = rows.length ? `<p>${all.length} transaction(s) · in ${money(tIn)} · out ${money(tOut)} · net <b>${money(tIn - tOut)}</b>${all.length > 500 ? ' — totals cover all of them; the list shows the newest 500' : ''}</p>
-      <div class="tablewrap"><table><thead><tr><th>Date</th><th>Description</th><th class="num">Amount</th><th>Category</th><th class="hide-sm">Shared</th><th></th></tr></thead><tbody>
+      <div class="tablewrap"><table><thead><tr><th>Date</th><th>Description</th><th class="num">Amount</th><th>Category</th><th class="hide-sm">Shared</th><th class="hide-sm" title="A one-off: categorised by hand, no rule">One-off</th><th></th></tr></thead><tbody>
       ${rows.map((r, i) => `<tr><td>${esc(fmtDate(r.txn_date))}<br><span class="hint hide-sm">${esc(refName('accounts', r.account_id))}</span></td><td>${esc(r.description)}</td>
         <td class="num ${r.amount > 0 ? 'in' : ''}">${money(r.amount)}</td>
         <td><select data-i="${i}" class="cat" aria-label="Category">${catOpts(r.category_id)}</select>${r.category_source === 'rule' ? '<br><span class="hint">by rule</span>' : ''}</td>
         <td class="hide-sm"><input type="checkbox" class="shr" data-i="${i}" ${r.is_shared ? 'checked' : ''} aria-label="Shared"></td>
+        <td class="hide-sm"><input type="checkbox" class="one" data-i="${i}" ${r.is_one_off ? 'checked' : ''} aria-label="One-off"></td>
         <td><button class="small mkrule" data-i="${i}" title="Always categorise transactions like this">Make rule</button></td></tr>`).join('')}
       </tbody>${totalsRow}</table></div>` : '<p class="empty">No transactions match.</p>';
-    box.querySelectorAll('.cat').forEach(s => s.onchange = async () => {
-      const r = rows[s.dataset.i];
-      await q(sb.from('transactions').update({ category_id: s.value || null, category_source: s.value ? 'manual' : 'none' }).eq('id', r.id));
-      r.category_id = s.value || null; toast('Category saved');
+    box.querySelectorAll('.cat').forEach(sel => wireCatSelect(sel, async (id) => {
+      const r = rows[sel.dataset.i];
+      await q(sb.from('transactions').update({ category_id: id, category_source: id ? 'manual' : 'none' }).eq('id', r.id));
+      r.category_id = id; toast('Category saved (this transaction only)');
+    }, rows[sel.dataset.i].amount > 0 ? 'income' : 'expense'));
+    box.querySelectorAll('.one').forEach(c => c.onchange = async () => {
+      const r = rows[c.dataset.i];
+      await q(sb.from('transactions').update({ is_one_off: c.checked }).eq('id', r.id));
+      toast(c.checked ? 'Marked as a one-off' : 'No longer a one-off');
     });
     box.querySelectorAll('.shr').forEach(c => c.onchange = async () => {
       const r = rows[c.dataset.i];
@@ -461,34 +517,122 @@ async function transactions(opts = {}) {
   $('#f-cat').onchange = e => { state.category = e.target.value; load(); };
   $('#f-all').onclick = () => { state.month = ''; $('#f-month').value = ''; load(); };
   $('#f-clear').onclick = () => {
-    Object.assign(state, { month: today().slice(0, 7), account: '', category: '', uncategorised: false, search: '' });
-    $('#f-month').value = state.month; $('#f-acct').value = ''; $('#f-cat').value = ''; $('#f-uncat').checked = false; $('#f-search').value = ''; load();
+    Object.assign(state, { month: today().slice(0, 7), account: '', category: '', uncategorised: false, oneoff: false, search: '' });
+    $('#f-month').value = state.month; $('#f-acct').value = ''; $('#f-cat').value = ''; $('#f-uncat').checked = false; $('#f-oneoff').checked = false; $('#f-search').value = ''; load();
   };
   $('#f-uncat').onchange = e => { state.uncategorised = e.target.checked; load(); };
+  $('#f-oneoff').onchange = e => { state.oneoff = e.target.checked; load(); };
   let t; $('#f-search').oninput = e => { clearTimeout(t); t = setTimeout(() => { state.search = e.target.value.trim(); load(); }, 350); };
   await load();
 }
 
-function makeRule(txn, after) {
-  const guess = txn.description.replace(/[0-9#*]+/g, ' ').trim().split(/\s+/).slice(0, 2).join(' ').toUpperCase();
+function makeRule(txn, after, presetCat) {
+  const guess = txn.guess || txn.description.replace(/[0-9#*]+/g, ' ').trim().split(/\s+/).slice(0, 2).join(' ').toUpperCase();
   const dlg = document.createElement('dialog');
   dlg.innerHTML = `<form method="dialog"><h2>Make a rule</h2><p class="hint">From: ${esc(txn.description)}</p>
     <label>When the description contains <input name="m" value="${esc(guess)}" required></label>
-    <label>Set category <select name="c" required>${cache.categories.map(c => `<option value="${c.id}" ${c.id === txn.category_id ? 'selected' : ''}>${esc(c.name)}</option>`).join('')}</select></label>
+    <label>Set category <select name="c" required>${catOptions(presetCat || txn.category_id)}</select></label>
     <label><input type="checkbox" name="s"> Also add to shared costs</label>
     <p class="hint">The rule applies to money ${txn.amount > 0 ? 'coming in' : 'going out'}, and is re-run on everything not set by hand.</p>
     <div class="row"><button class="primary" value="save">Save rule</button><button value="cancel" formnovalidate>Cancel</button></div></form>`;
   document.body.appendChild(dlg);
   const f = $('form', dlg);
+  wireCatSelect(f.c, () => {}, txn.amount > 0 ? 'income' : 'expense');
   f.addEventListener('submit', async e => {
     if (e.submitter?.value !== 'save') return;
     e.preventDefault();
+    if (!f.c.value || f.c.value === '__new') { toast('Pick a category first'); return; }
     await q(sb.from('category_rules').insert({ match_text: f.m.value.trim(), direction: txn.amount > 0 ? 'in' : 'out', category_id: f.c.value, mark_shared: f.s.checked, priority: 20 }));
     const n = await q(sb.rpc('recategorise_uncategorised'));
     toast(`Rule saved — ${n} transaction(s) updated`); dlg.close(); after();
   });
   dlg.addEventListener('close', () => dlg.remove());
   dlg.showModal();
+}
+
+// ---------- TO SORT (uncategorised, grouped by payee) ----------
+// Payee key: description with reference numbers / codes removed, so repeat payments group together
+const payeeKey = d => d.toUpperCase().replace(/\\[^\s]*/g, ' ').replace(/\b[A-Z0-9]*\d[A-Z0-9/.\-]*\b/g, ' ').replace(/[^A-Z&' ]+/g, ' ').replace(/\b(JAN|FEB|MAR|APR|MAY|JUN|JUL|AUG|SEP|OCT|NOV|DEC)\b/g, ' ').replace(/\s+/g, ' ').trim() || d.toUpperCase();
+let sortDir = 'all';
+async function sortView() {
+  view.innerHTML = '<p>Loading…</p>';
+  let all = [];
+  for (let from = 0; ; from += 1000) {
+    const page = await q(sb.from('transactions').select('*').is('category_id', null).order('txn_date', { ascending: false }).range(from, from + 999));
+    all = all.concat(page); if (page.length < 1000) break;
+  }
+  const groupsMap = new Map();
+  for (const t of all) {
+    const k = (t.amount > 0 ? 'in|' : 'out|') + payeeKey(t.description);
+    if (!groupsMap.has(k)) groupsMap.set(k, { key: k, name: payeeKey(t.description), dir: t.amount > 0 ? 'in' : 'out', txns: [] });
+    groupsMap.get(k).txns.push(t);
+  }
+  let groups = [...groupsMap.values()].map(g => ({ ...g, total: sum(g.txns, t => t.amount), last: g.txns[0].txn_date, first: g.txns.at(-1).txn_date }));
+  groups.sort((a, b) => Math.abs(b.total) - Math.abs(a.total));
+  const draw = () => {
+    const shown = groups.filter(g => sortDir === 'all' || g.dir === sortDir);
+    view.innerHTML = `<div class="card"><h2>To sort</h2>
+      <p>${all.length} transaction(s) without a category, grouped by who they're from or to — biggest first.
+      For each group pick a category, then either <b>One-off</b> (just these, no rule) or <b>Make rule</b> (these and all future ones).</p>
+      <div class="row"><span>Show:</span>${['all', 'out', 'in'].map(d => `<button class="small ${sortDir === d ? 'primary' : ''}" data-dir="${d}">${{ all: 'Everything', out: 'Money out', in: 'Money in' }[d]}</button>`).join('')}</div></div>
+      ${shown.length ? shown.slice(0, 150).map(g => `<div class="card sortgroup" data-k="${esc(g.key)}">
+        <div class="row" style="justify-content:space-between;align-items:flex-start">
+          <div><b>${esc(g.txns[0].description)}</b><br>
+            <span class="hint">${g.txns.length} transaction(s) · ${esc(fmtDate(g.first))}${g.first !== g.last ? ' – ' + esc(fmtDate(g.last)) : ''} · ${esc([...new Set(g.txns.map(t => refName('accounts', t.account_id)))].join(', '))}</span></div>
+          <div class="num ${g.total > 0 ? 'in' : ''}" style="font-size:1.2rem"><b>${money(g.total)}</b></div>
+        </div>
+        <div class="row" style="margin-top:.5rem">
+          <select class="g-cat" aria-label="Category" style="max-width:280px;margin:0">${catOptions('')}</select>
+          <label style="font-weight:400;margin:0"><input type="checkbox" class="g-shr"> Shared</label>
+          <button class="primary small g-one" title="Categorise just these transactions, no rule">One-off</button>
+          <button class="small g-rule" title="Categorise these and all future ones like them">Make rule</button>
+          <button class="small link g-show">${g.txns.length > 1 ? `Show ${g.txns.length}` : 'Show'}</button>
+        </div>
+        <div class="g-list hidden"></div></div>`).join('') + (shown.length > 150 ? `<p class="hint">Showing the biggest 150 groups.</p>` : '')
+      : '<div class="card"><p class="empty">Nothing to sort — every transaction has a category. 🎉</p></div>'}`;
+    view.querySelectorAll('[data-dir]').forEach(b => b.onclick = () => { sortDir = b.dataset.dir; draw(); });
+    view.querySelectorAll('.sortgroup').forEach(card => {
+      const g = groups.find(x => x.key === card.dataset.k);
+      const sel = $('.g-cat', card);
+      wireCatSelect(sel, () => {}, g.dir === 'in' ? 'income' : 'expense');
+      const done = (msg) => { groups = groups.filter(x => x !== g); all = all.filter(t => !g.txns.includes(t)); toast(msg); draw(); };
+      $('.g-one', card).onclick = async () => {
+        if (!sel.value || sel.value === '__new') { toast('Pick a category first'); sel.focus(); return; }
+        const ids = g.txns.map(t => t.id), shared = $('.g-shr', card).checked;
+        for (let i = 0; i < ids.length; i += 200)
+          await q(sb.from('transactions').update({ category_id: sel.value, category_source: 'manual', is_one_off: true, is_shared: shared }).in('id', ids.slice(i, i + 200)));
+        if (shared) await addShared(g.txns.filter(t => t.amount < 0));
+        done(`${ids.length} transaction(s) saved as a one-off`);
+      };
+      $('.g-rule', card).onclick = () => {
+        const t = { ...g.txns[0], guess: g.name.split(' ').slice(0, 3).join(' ') };
+        makeRule(t, async () => { await sortView(); }, sel.value && sel.value !== '__new' ? sel.value : null);
+      };
+      $('.g-show', card).onclick = () => {
+        const box = $('.g-list', card); box.classList.toggle('hidden');
+        if (box.classList.contains('hidden')) return;
+        box.innerHTML = `<div class="tablewrap"><table><tbody>${g.txns.map((t, i) => `<tr><td>${esc(fmtDate(t.txn_date))}</td><td>${esc(t.description)}</td>
+          <td class="num ${t.amount > 0 ? 'in' : ''}">${money(t.amount)}</td>
+          <td><select class="t-cat" data-i="${i}" aria-label="Category">${catOptions('')}</select></td></tr>`).join('')}</tbody></table></div>
+          <p class="hint">Setting a category on a single row saves it as a one-off for that transaction only.</p>`;
+        box.querySelectorAll('.t-cat').forEach(s2 => wireCatSelect(s2, async (id) => {
+          if (!id) return;
+          const t = g.txns[s2.dataset.i];
+          await q(sb.from('transactions').update({ category_id: id, category_source: 'manual', is_one_off: true }).eq('id', t.id));
+          g.txns = g.txns.filter(x => x !== t); all = all.filter(x => x !== t);
+          if (!g.txns.length) groups = groups.filter(x => x !== g); else g.total = sum(g.txns, x => x.amount);
+          toast('Saved as a one-off'); draw();
+        }, g.dir === 'in' ? 'income' : 'expense'));
+      };
+    });
+  };
+  draw();
+}
+async function addShared(txns) {
+  if (!txns.length) return;
+  const share = cache.settings?.default_my_share_pct ?? 50;
+  const rows = txns.map(t => ({ entry_date: t.txn_date, description: t.description, total_amount: Math.abs(t.amount), paid_by: 'me', my_share_pct: share, transaction_id: t.id }));
+  for (let i = 0; i < rows.length; i += 200) await q(sb.from('shared_ledger').insert(rows.slice(i, i + 200)));
 }
 
 // ---------- IMPORT ----------
@@ -556,8 +700,11 @@ async function importView() {
     }
     for (const { file, parsed } of parsedFiles) {
       const acc = parsed.account || {};
+      const inst = guessInstitution(parsed, file.name);
+      const sameBankNoNumber = cache.accounts.filter(a => a.institution === inst && !a.nickname_last4 && !['loan', 'mortgage'].includes(a.account_type));
       const match = cache.accounts.find(a => acc.last4 && a.nickname_last4 === acc.last4)
-        || cache.accounts.find(a => acc.name && a.name.toLowerCase() === acc.name.toLowerCase() && !a.nickname_last4);
+        || cache.accounts.find(a => acc.name && a.name.toLowerCase() === acc.name.toLowerCase() && !a.nickname_last4)
+        || (!acc.last4 && !acc.name && sameBankNoNumber.length === 1 ? sameBankNoNumber[0] : null);
       jobs.push({ file, parsed, accountId: match ? match.id : 'new',
         newName: acc.name ? `${acc.name}${acc.last4 ? ' …' + acc.last4 : ''}` : `${guessInstitution(parsed, file.name)} account${acc.last4 ? ' …' + acc.last4 : ''}` });
     }
@@ -629,7 +776,7 @@ async function importView() {
       }
       pv.innerHTML = `<p class="msg"><b>Done.</b></p><ul>${results.join('')}</ul>
         <p>Next: <button class="link" id="go-uncat2">sort the uncategorised transactions</button>.</p>`;
-      $('#go-uncat2').onclick = () => show('transactions', { uncategorised: true });
+      $('#go-uncat2').onclick = () => show('sort');
       $('#i-file').value = ''; await loadHistory();
     }
   };
@@ -731,7 +878,7 @@ async function setup() {
 }
 
 // ---------- navigation & auth ----------
-const VIEWS = { dashboard, budget, transactions, import: importView, bills, debts, shared, setup };
+const VIEWS = { dashboard, budget, transactions, sort: sortView, import: importView, bills, debts, shared, setup };
 async function show(name, opts) {
   document.querySelectorAll('#tabs button').forEach(b => b.classList.toggle('active', b.dataset.view === name));
   history.replaceState(null, '', '#' + name);
