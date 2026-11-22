@@ -1,0 +1,49 @@
+<!DOCTYPE html>
+<html lang="en-AU">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="theme-color" content="#1f4e46">
+  <title>Household Finances</title>
+  <link rel="manifest" href="manifest.webmanifest">
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Atkinson+Hyperlegible:wght@400;700&display=swap" rel="stylesheet">
+  <link rel="stylesheet" href="styles.css">
+</head>
+<body>
+  <header class="topbar">
+    <h1>Household Finances</h1>
+    <button id="signout" class="link hidden" type="button">Sign out</button>
+  </header>
+
+  <nav id="tabs" class="tabs hidden" aria-label="Sections">
+    <button data-view="dashboard" class="active">Dashboard</button>
+    <button data-view="transactions">Transactions</button>
+    <button data-view="import">Import</button>
+    <button data-view="bills">Bills &amp; income</button>
+    <button data-view="debts">Debts</button>
+    <button data-view="shared">Shared costs</button>
+    <button data-view="setup">Setup</button>
+  </nav>
+
+  <main id="main">
+    <section id="auth" class="card narrow">
+      <h2>Sign in</h2>
+      <form id="authform">
+        <label>Email <input type="email" id="email" required autocomplete="email"></label>
+        <label>Password <input type="password" id="password" required minlength="8" autocomplete="current-password"></label>
+        <div class="row">
+          <button type="submit" class="primary">Sign in</button>
+          <button type="button" id="signup">Create account</button>
+        </div>
+        <p id="authmsg" class="msg" role="status"></p>
+      </form>
+    </section>
+    <div id="view"></div>
+  </main>
+
+  <div id="toast" class="toast" role="status" aria-live="polite"></div>
+  <script type="module" src="app.js"></script>
+</body>
+</html>

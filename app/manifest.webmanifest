@@ -1,0 +1,8 @@
+{
+  "name": "Household Finances",
+  "short_name": "Finances",
+  "start_url": ".",
+  "display": "standalone",
+  "background_color": "#f6f4ee",
+  "theme_color": "#1f4e46"
+}
