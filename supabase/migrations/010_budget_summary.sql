@@ -1,0 +1,6 @@
+-- public.budget_summary(p_months int default 6) -> jsonb
+-- Household budget split three ways: overall (100%), me (each item's My share %), partner (the rest).
+-- Regular figures from recurring_items + debts (min_payment as monthly cost); actual figures are
+-- monthly averages of real transactions (transfers excluded). Shares for actual transactions:
+-- linked bill/income item's share; else spending -> settings.default_my_share_pct; else income ->
+-- joint account share or 100%. Full SQL in the Supabase migration history (010_budget_summary).

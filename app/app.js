@@ -312,6 +312,53 @@ async function dashboard() {
   });
 }
 
+// ---------- BUDGET (Overall / me / partner) ----------
+let budgetWho = 'overall';
+async function budget() {
+  view.innerHTML = '<p>Loading…</p>';
+  const months = 6;
+  const r = await q(sb.rpc('budget_summary', { p_months: months }));
+  const me = cache.settings?.display_name || 'Me';
+  const names = { overall: 'Overall household', me, partner: r.partner };
+  const draw = () => {
+    const p = r.people[budgetWho];
+    const gap = p.regular_in - p.regular_out - p.debt_monthly;
+    const actualGap = p.actual_in - p.actual_out;
+    const row = (cells, cls = '') => `<tr class="${cls}">${cells.map((c, i) => `<td class="${i ? 'num' : ''}">${c}</td>`).join('')}</tr>`;
+    const freq = f => ({ weekly: 'week', fortnightly: 'fortnight', monthly: 'month', quarterly: 'quarter', yearly: 'year' }[f] || f);
+    const spend = p.categories.filter(c => c.amount < 0);
+    const income = p.categories.filter(c => c.amount > 0).sort((a, b) => b.amount - a.amount);
+    view.innerHTML = `
+      <div class="row" role="tablist" style="margin-bottom:1rem">
+        ${Object.entries(names).map(([k, v]) => `<button role="tab" class="${k === budgetWho ? 'primary' : ''}" data-who="${k}" aria-selected="${k === budgetWho}">${esc(v)}</button>`).join('')}
+      </div>
+      <div class="grid">
+        <div class="stat ${gap < 0 ? 'bad' : 'good'}"><div class="label">Regular monthly left over</div><div class="value">${money(gap)}</div>
+          <div class="sub">Income ${money(p.regular_in)} − bills ${money(p.regular_out)} − debt costs ${money(p.debt_monthly)}</div></div>
+        <div class="stat ${actualGap < 0 ? 'bad' : 'good'}"><div class="label">Actual average, last ${months} months</div><div class="value">${money(actualGap)}</div>
+          <div class="sub">In ${money(p.actual_in)} · Out ${money(p.actual_out)} per month (to ${esc(fmtDate(r.data_to))})</div></div>
+        <div class="stat warn"><div class="label">Debt</div><div class="value">${money(p.debt_balance)}</div><div class="sub">Overdue ${money(p.arrears)}</div></div>
+      </div>
+      ${budgetWho !== 'overall' ? `<p class="hint">Shares used: each bill, income and debt's "My share %" (${esc(me)} gets that %, ${esc(r.partner)} the rest). Everyday spending not linked to a bill uses your shared-costs % from Setup. Money moved between you two isn't counted.</p>` : ''}
+      <div class="grid" style="grid-template-columns:repeat(auto-fit,minmax(min(100%,460px),1fr))">
+        <div class="card"><h2>Regular income</h2>${p.income_items.length ? `<div class="tablewrap"><table><thead><tr><th>Item</th><th class="num">Amount</th><th class="num">Share</th><th class="num">Per month</th></tr></thead><tbody>
+          ${p.income_items.map(i => row([esc(i.name), `${money(i.amount)}/${freq(i.frequency)}`, i.share + '%', money(i.monthly)])).join('')}
+          ${row(['<b>Total</b>', '', '', `<b>${money(p.regular_in)}</b>`])}</tbody></table></div>` : '<p class="empty">None.</p>'}</div>
+        <div class="card"><h2>Regular bills</h2>${p.bill_items.length ? `<div class="tablewrap"><table><thead><tr><th>Bill</th><th class="num">Amount</th><th class="num">Share</th><th class="num">Per month</th></tr></thead><tbody>
+          ${p.bill_items.map(i => row([esc(i.name), `${money(i.amount)}/${freq(i.frequency)}`, i.share + '%', money(i.monthly)])).join('')}
+          ${row(['<b>Total</b>', '', '', `<b>${money(p.regular_out)}</b>`])}</tbody></table></div>` : '<p class="empty">None.</p>'}</div>
+        <div class="card"><h2>Debts</h2>${p.debt_items.length ? `<div class="tablewrap"><table><thead><tr><th>Debt</th><th class="num">Share</th><th class="num">Balance</th><th class="num">Per month</th></tr></thead><tbody>
+          ${p.debt_items.map(d => row([`${esc(d.creditor)}${d.hardship === 'approved' ? ' <span class="pill good">hardship</span>' : ''}`, d.share + '%', d.balance ? money(d.balance) : '<span class="hint">not entered</span>', money(d.monthly)])).join('')}
+          ${row(['<b>Total</b>', '', `<b>${money(p.debt_balance)}</b>`, `<b>${money(p.debt_monthly)}</b>`])}</tbody></table></div>` : '<p class="empty">None.</p>'}</div>
+        <div class="card"><h2>Actual spending — average per month</h2>${spend.length ? `<div class="tablewrap"><table><tbody>
+          ${spend.map(c => row([esc(c.name), money(-c.amount)])).join('')}${row(['<b>Total</b>', `<b>${money(p.actual_out)}</b>`])}</tbody></table></div>` : '<p class="empty">No spending imported.</p>'}
+          ${income.length ? `<h3>Actual income — average per month</h3><table><tbody>${income.map(c => row([esc(c.name), money(c.amount)])).join('')}${row(['<b>Total</b>', `<b>${money(p.actual_in)}</b>`])}</tbody></table></div>` : ''}</div>
+      </div>`;
+    view.querySelectorAll('[data-who]').forEach(b => b.onclick = () => { budgetWho = b.dataset.who; draw(); });
+  };
+  draw();
+}
+
 // ---------- TRANSACTIONS ----------
 async function transactions(opts = {}) {
   const state = { month: opts.uncategorised ? '' : today().slice(0, 7), account: '', uncategorised: !!opts.uncategorised, search: '' };
@@ -614,7 +661,7 @@ async function setup() {
 }
 
 // ---------- navigation & auth ----------
-const VIEWS = { dashboard, transactions, import: importView, bills, debts, shared, setup };
+const VIEWS = { dashboard, budget, transactions, import: importView, bills, debts, shared, setup };
 async function show(name, opts) {
   document.querySelectorAll('#tabs button').forEach(b => b.classList.toggle('active', b.dataset.view === name));
   history.replaceState(null, '', '#' + name);

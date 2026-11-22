@@ -14,6 +14,7 @@ debt register with creditor contact log, shared costs with ex-partner, and a das
 | Screen | What it does |
 |---|---|
 | Dashboard | Money in accounts, this month in/out, regular monthly gap, total debt and arrears, shared balance, next 3 weeks of bills/income, spending vs budget, creditor follow-ups due |
+| Budget | Three tabs — **Overall household**, **Michael**, **Taslyn** — regular income, bills and debt costs split by each item's share %, plus actual average spending and income over the last 6 months |
 | Transactions | Filter by month / account / search; change category; tick "shared"; **Make rule** to auto-categorise similar transactions forever |
 | Import | Choose several files at once: CommBank/Westpac **CSV** or the Westpac app's **Account activity PDF**. Accounts are matched by last 4 digits or created for you with the right starting balance. Duplicates skipped. Matches bills. **Undo** any import |
 | Bills & income | Recurring bills and income (weekly / fortnightly / monthly …), shared %, next 5 weeks cash view |
