@@ -1,6 +1,6 @@
 import { createClient } from 'https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2/+esm';
 import { SUPABASE_URL, SUPABASE_PUBLISHABLE_KEY } from './config.js';
-import { parseBankCsv, parseWestpacActivity } from './csv.js';
+import { parseBankCsv, parseWestpacActivity, splitAccounts } from './csv.js';
 
 const sb = createClient(SUPABASE_URL, SUPABASE_PUBLISHABLE_KEY);
 const $ = (s, el = document) => el.querySelector(s);
@@ -544,6 +544,7 @@ async function importView() {
     const files = [...e.target.files]; if (!files.length) return;
     const pv = $('#i-preview'); pv.innerHTML = '<p>Reading files…</p>';
     const jobs = [];
+    const parsedFiles = [];
     for (const file of files) {
       let parsed;
       try {
@@ -551,11 +552,14 @@ async function importView() {
           ? parseWestpacActivity(await readPdfItems(file))
           : parseBankCsv(await file.text());
       } catch (err) { parsed = { format: 'unknown', rows: [], skipped: [], error: 'Could not read this file: ' + err.message }; }
+      for (const part of (parsed.error ? [parsed] : splitAccounts(parsed))) parsedFiles.push({ file, parsed: part });
+    }
+    for (const { file, parsed } of parsedFiles) {
       const acc = parsed.account || {};
       const match = cache.accounts.find(a => acc.last4 && a.nickname_last4 === acc.last4)
         || cache.accounts.find(a => acc.name && a.name.toLowerCase() === acc.name.toLowerCase() && !a.nickname_last4);
       jobs.push({ file, parsed, accountId: match ? match.id : 'new',
-        newName: acc.name ? `${acc.name}${acc.last4 ? ' …' + acc.last4 : ''}` : (guessInstitution(parsed, file.name) + ' account') });
+        newName: acc.name ? `${acc.name}${acc.last4 ? ' …' + acc.last4 : ''}` : `${guessInstitution(parsed, file.name)} account${acc.last4 ? ' …' + acc.last4 : ''}` });
     }
     draw();
 
@@ -569,7 +573,7 @@ async function importView() {
           const dates = p.rows.map(r => r.date).sort();
           const ins = p.rows.filter(r => r.amount > 0).reduce((s, r) => s + r.amount, 0);
           const outs = -p.rows.filter(r => r.amount < 0).reduce((s, r) => s + r.amount, 0);
-          return `<tr><td>${esc(j.file.name)}<br><span class="hint">${esc(label(p.format))}${p.account?.name ? ' · ' + esc(p.account.name) : ''}${p.account?.last4 ? ' …' + esc(p.account.last4) : ''}</span></td>
+          return `<tr><td>${esc(j.file.name)}<br><span class="hint">${esc(label(p.format))}${p.account?.name ? ' · ' + esc(p.account.name) : ''}${p.account?.last4 ? ' · account …' + esc(p.account.last4) : ''}</span></td>
             <td><b>${p.rows.length}</b> transactions<br><span class="hint">${esc(fmtDate(dates[0]))} – ${esc(fmtDate(dates.at(-1)))}<br>in ${money(ins)} · out ${money(outs)}${p.account?.balance != null ? '<br>balance now ' + money(p.account.balance) : ''}</span>
               ${p.skipped.length ? `<br><span class="msg error">${p.skipped.length} line(s) skipped</span>` : ''}</td>
             <td><select data-i="${i}" class="j-acct"><option value="new" ${j.accountId === 'new' ? 'selected' : ''}>+ New account</option>
@@ -578,7 +582,7 @@ async function importView() {
                 <label style="font-weight:400"><input type="checkbox" class="j-joint" data-i="${i}" ${j.joint ? 'checked' : ''}> Joint / shared account</label>` : ''}</td></tr>`;
         }).join('')}</tbody></table></div>
         ${ok.length ? `<details><summary>Preview first rows</summary>${ok.map(j => `<h3>${esc(j.file.name)}</h3><div class="tablewrap"><table><tbody>${j.parsed.rows.slice(0, 5).map(r => `<tr><td>${esc(fmtDate(r.date))}</td><td>${esc(r.description)}</td><td class="num ${r.amount > 0 ? 'in' : ''}">${money(r.amount)}</td></tr>`).join('')}</tbody></table></div>`).join('')}</details>
-        <div class="row" style="margin-top:1rem"><button class="primary" id="i-go">Import ${ok.reduce((s, j) => s + j.parsed.rows.length, 0)} transactions from ${ok.length} file(s)</button></div>` : ''}`;
+        <div class="row" style="margin-top:1rem"><button class="primary" id="i-go">Import ${ok.reduce((s, j) => s + j.parsed.rows.length, 0)} transactions into ${ok.length} account(s)</button></div>` : ''}`;
       pv.querySelectorAll('.j-acct').forEach(s => s.onchange = () => { jobs[s.dataset.i].accountId = s.value; draw(); });
       pv.querySelectorAll('.j-name').forEach(inp => inp.oninput = () => { jobs[inp.dataset.i].newName = inp.value; });
       pv.querySelectorAll('.j-joint').forEach(c => c.onchange = () => { jobs[c.dataset.i].joint = c.checked; });
@@ -599,8 +603,15 @@ async function importView() {
             is_joint: !!j.joint, my_share_pct: j.joint ? Number(cache.settings?.default_my_share_pct ?? 50) : 100 }).select().single());
           accountId = created.id; await loadLookups();
           jobs.filter(o => o !== j && o.accountId === 'new' && o.newName === j.newName).forEach(o => o.accountId = accountId);
+        } else {
+          // file reaches further back than this account's start date: move the start back
+          const acct = cache.accounts.find(a => a.id === accountId);
+          const open = openingFor(p);
+          const hasBal = p.rows.some(r => r.balance != null);
+          if (acct && hasBal && open.date < acct.opening_date) {
+            await q(sb.from('accounts').update({ opening_balance: open.balance, opening_date: open.date }).eq('id', accountId));
+          }
         }
-        // send in chunks so very long histories go through reliably
         // Number identical same-day transactions across the whole file, so two genuine
         // $25 payments on the same day are never mistaken for a duplicate when sent in chunks.
         const seen = new Map();

@@ -90,7 +90,8 @@ export function parseBankCsv(text) {
     const hn = h.map(norm).join('|');
     format = isWestpac ? 'westpac' : hn === 'transactiondate|description|amount|balance' ? 'commbank' : 'generic';
     // Separate Debit/Credit columns win over a single Amount column (fuzzy "amount" would match "Debit Amount")
-    map = { date, desc, amount: (debit >= 0 && credit >= 0) ? -1 : amount, debit, credit, balance };
+    map = { date, desc, amount: (debit >= 0 && credit >= 0) ? -1 : amount, debit, credit, balance,
+            acct: findCol(h, ['bankaccount', 'accountnumber']) };
     if (date < 0 || desc < 0 || (map.amount < 0 && debit < 0 && credit < 0)) {
       return { format: 'unknown', rows: [], skipped: [], error:
         'Could not find Date, Description and Amount (or Debit/Credit) columns in this file. Headers found: ' + h.join(', ') };
@@ -99,7 +100,7 @@ export function parseBankCsv(text) {
     // CommBank NetBank export: Date, Amount, Description, Balance (no header row)
     format = 'commbank';
     body = all; startLine = 1;
-    map = { date: 0, amount: 1, desc: 2, balance: first.length >= 4 ? 3 : -1, debit: -1, credit: -1 };
+    map = { date: 0, amount: 1, desc: 2, balance: first.length >= 4 ? 3 : -1, debit: -1, credit: -1, acct: -1 };
   } else {
     return { format: 'unknown', rows: [], skipped: [], error:
       'This file doesn’t look like a Westpac or CommBank export. First line: ' + first.join(', ') };
@@ -123,7 +124,9 @@ export function parseBankCsv(text) {
     if (!date) return skipped.push({ line, reason: 'date not recognised', raw: r.join(', ') });
     if (amount === null) return skipped.push({ line, reason: 'amount not recognised', raw: r.join(', ') });
     if (amount === 0) return skipped.push({ line, reason: 'zero amount', raw: r.join(', ') });
-    rows.push({ date, description: description || '(no description)', amount: Math.round(amount * 100) / 100, balance });
+    const row = { date, description: description || '(no description)', amount: Math.round(amount * 100) / 100, balance };
+    if (map.acct >= 0 && r[map.acct]) row.acct = r[map.acct].replace(/\D/g, '');
+    rows.push(row);
   });
   return { format, rows, skipped };
 }
@@ -194,4 +197,21 @@ export function parseWestpacActivity(pages) {
     rows.push({ date: a.date, description: desc || '(no description)', amount: Math.round(a.amount * 100) / 100, balance: null });
   });
   return { format: 'westpac-pdf', account: { name, last4, balance }, rows, skipped };
+}
+
+// A Westpac CSV export can hold several accounts (one "Bank Account" column).
+// Split it into one parsed result per account, each tagged with the account's last 4 digits.
+export function splitAccounts(parsed) {
+  if (!parsed.rows.some(r => r.acct)) return [parsed];
+  const groups = new Map();
+  for (const r of parsed.rows) {
+    const k = r.acct || '';
+    if (!groups.has(k)) groups.set(k, []);
+    const { acct, ...rest } = r;
+    groups.get(k).push(rest);
+  }
+  return [...groups.entries()].map(([acct, rows]) => ({
+    ...parsed, rows, skipped: groups.size === 1 ? parsed.skipped : [],
+    account: { name: null, last4: acct.slice(-4) || '', number: acct, balance: null },
+  }));
 }
