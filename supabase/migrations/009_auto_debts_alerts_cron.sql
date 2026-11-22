@@ -1,0 +1,12 @@
+-- Stage 3 (part 1) automation — applied to the live project 22 Nov 2026.
+-- * debts.account_id: link a debt to a loan account; balance follows the account
+--   (public.sync_my_debts(), called at the end of every import).
+-- * recurring_items.auto_detected flag.
+-- * import_transactions: bills only match payments in their own account (when set);
+--   due date rolls to the later of (next due, paid date + frequency); syncs debts.
+-- * public.daily_checks(): SECURITY DEFINER, not callable from the app. For every user:
+--   syncs linked debts, clears stale alerts, raises alerts for: bills due in 3 days,
+--   bills not seen paid 3+ days after due, late income, overdrawn accounts,
+--   creditor follow-ups due, hardship arrangements ending within 14 days.
+-- * pg_cron job 'daily-finance-checks' at 22:00 UTC (6:00am Perth).
+-- Full SQL is in the Supabase migration history (009_auto_debts_alerts_cron).

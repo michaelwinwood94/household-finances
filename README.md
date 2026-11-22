@@ -71,10 +71,14 @@ Starter categories and ~30 auto-categorising rules are added automatically.
 - **Not yet tested with your real bank exports** — if an import shows "not recognised", send Claude
   the first two lines of the CSV (with amounts changed if you like).
 
+## Automation (running now)
+- **Every import:** transactions sorted by rules; bills/income matched and due dates moved on; loan debts updated from the loan account balance.
+- **Every morning at 6am:** alerts on the dashboard for bills due within 3 days, bills not seen paid, income that hasn't arrived, overdrawn accounts, creditor follow-ups and hardship arrangements about to end.
+- Bills and income marked "Auto-detected" were found from your transactions — edit or delete any that are wrong.
+
 ## Coming next
 - **Stage 2:** goals screen (buffer → catch-up → pay-down), budget editor, debt payoff view.
-- **Stage 3:** automation — nightly checks that create dashboard alerts (bill due in 3 days,
-  missed payment, budget overspend, follow-up due), phone notifications.
+- **Stage 3 (rest):** phone notifications, budget-overspend alerts, Google Drive drop-folder import.
 - **Stage 4:** cash-flow forecast to next payday; optional live bank feeds (Consumer Data Right provider).
 
 ## Database changes

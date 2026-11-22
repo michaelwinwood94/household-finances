@@ -106,7 +106,8 @@ const TABLES = {
     fields: [
       { k: 'creditor', label: 'Who is owed', type: 'text', required: true },
       { k: 'debt_type', label: 'Type', type: 'select', options: ['mortgage', 'car_loan', 'personal_loan', 'credit_card', 'bnpl', 'utility', 'tax', 'fine', 'court', 'centrelink', 'family', 'other'] },
-      { k: 'current_balance', label: 'Current balance', type: 'number', required: true },
+      { k: 'current_balance', label: 'Current balance', type: 'number', required: true, hint: 'Updates automatically if a loan account is linked below' },
+      { k: 'account_id', label: 'Linked loan account', type: 'ref', ref: 'accounts', hint: 'For home loans etc. — the balance then follows your imported statements' },
       { k: 'balance_as_at', label: 'Balance as at', type: 'date', default: today },
       { k: 'original_balance', label: 'Original amount', type: 'number' },
       { k: 'arrears_amount', label: 'Arrears (overdue amount)', type: 'number', default: 0 },
@@ -238,6 +239,9 @@ async function renderCrud(container, key, { filter = {}, title, onChange, extra 
 async function dashboard() {
   view.innerHTML = '<p>Loading…</p>';
   const monthStart = today().slice(0, 8) + '01';
+  const rank = { urgent: 0, warning: 1, info: 2 };
+  const alerts = (await q(sb.from('alerts').select('*').eq('dismissed', false).order('due_date')))
+    .sort((a, b) => rank[a.severity] - rank[b.severity]);
   const [bal, cash, debt, shared, commit, upcoming, followups, catSpend] = await Promise.all([
     q(sb.from('v_account_balances').select('*').eq('is_active', true)),
     q(sb.from('v_monthly_cashflow').select('*').order('month', { ascending: false }).limit(6)),
@@ -263,6 +267,11 @@ async function dashboard() {
   const gap = Number(commit?.monthly_in || 0) - Number(commit?.monthly_out || 0) - Number(debt?.my_monthly_minimums || 0);
 
   view.innerHTML = `
+    ${alerts.length ? `<div class="card" id="alerts"><h2>Alerts</h2><table><tbody>${alerts.map((a, i) => `<tr>
+        <td><span class="pill ${a.severity === 'urgent' ? 'bad' : a.severity === 'warning' ? 'warn' : ''}">${esc(label(a.severity))}</span></td>
+        <td><b>${esc(a.title)}</b><br><span class="hint">${esc(a.body)}</span></td>
+        <td><button class="small dismiss" data-i="${i}">Dismiss</button></td></tr>`).join('')}</tbody></table>
+        <p class="hint">Checked automatically every morning at 6am.</p></div>` : ''}
     ${!cache.accounts.length ? `<div class="card"><h2>Welcome</h2><p>Start in <b>Setup</b>: add your bank accounts. Or go straight to <b>Import</b> and choose your CommBank CSV and Westpac PDF/CSV files — accounts are set up for you.</p></div>` : ''}
     <div class="grid">
       <div class="stat"><div class="label">Money in accounts</div><div class="value">${money(totalCash)}</div><div class="sub">${cashAccts.length} everyday/savings account(s)${jointAccts.length ? `<br>Includes your share of joint accounts (joint total ${money(jointTotal)})` : ''}</div></div>
@@ -297,6 +306,10 @@ async function dashboard() {
       </div>
     </div>`;
   $('#go-uncat')?.addEventListener('click', () => show('transactions', { uncategorised: true }));
+  view.querySelectorAll('.dismiss').forEach(b => b.onclick = async () => {
+    await q(sb.from('alerts').update({ dismissed: true }).eq('id', alerts[b.dataset.i].id));
+    b.closest('tr').remove(); if (!view.querySelector('.dismiss')) $('#alerts')?.remove();
+  });
 }
 
 // ---------- TRANSACTIONS ----------
