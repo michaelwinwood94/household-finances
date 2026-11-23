@@ -1,7 +1,7 @@
 // Payslip reader: turns the text of a payslip (from a PDF or a photo) into payslip fields.
 // Works on labels, not on one employer's layout: it looks for words like "Gross", "PAYG", "Net pay",
 // "Super", "Pay date" and takes the numbers on the same line. Everything it fills is shown for checking.
-import { parseDate } from './csv.js?v=202611240200';
+import { parseDate } from './csv.js?v=202611240215';
 
 const MONEY = /\(?-?\$?\s?\d{1,3}(?:,\d{3})*(?:\.\d{2})\)?|\(?-?\$?\s?\d+\.\d{2}\)?/g;
 const toNum = s => { const neg = /^\(|-/.test(s.trim()); const n = Number(s.replace(/[^\d.]/g, '')); return neg ? -n : n; };

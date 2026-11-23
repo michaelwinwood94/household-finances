@@ -17,8 +17,8 @@ debt register with creditor contact log, shared costs with ex-partner, and a das
 | **Insights** | 4-week balance forecast (bills + income + usual daily spending) with lowest point and safe-to-spend before next pay; bounced payments; bank fees and days overdrawn; subscriptions & repeat charges with **Add as bill**; bills that changed price; categories higher than usual; Afterpay/BNPL vs income; possible double charges |
 | **Budget** | Household / Michael / Taslyn: regular income against bills and debt repayments, what's left each month, and average everyday spending. **Budget by category**: set a monthly limit per category and see this month's spending against it |
 | **Goals** | 1 · Buffer (cash on hand against a target you set) · 2 · Catch up on overdue amounts (clear-by date and the fortnightly amount needed) · 3 · Pay-down order (overdue first, then highest interest, then smallest balance; time to clear at the entered repayment) |
-| **Bills** | Regular payments including loan repayments: per-month totals, due in the next 5 weeks, the full list |
-| **Income** | Regular money coming in: per-month totals, expected in the next 5 weeks, the full list |
+| **Bills** | Regular payments including loan repayments: per-month totals, the due list with a time-range dropdown (1 week to 6 months, remembered), the full list |
+| **Income** | Regular money coming in: per-month totals, expected list with the same time-range dropdown, the full list |
 | **Debts** | Who you owe (chart), repayments, overdue amounts, hardship status, and a call log per creditor |
 | **Transactions** | Every transaction; filter by months (tick several), account, category, search; totals follow the filter; one-off flag |
 | **To sort** | Uncategorised transactions grouped by payee; **One-off** or **Make rule**; **+ New category…** from any category list |

@@ -1,11 +1,11 @@
 import { createClient } from 'https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2/+esm';
-import { SUPABASE_URL, SUPABASE_PUBLISHABLE_KEY } from './config.js?v=202611240200';
-import { parseBankCsv, parseWestpacActivity, parseLatitudeStatement, isLatitudeStatement, splitAccounts, linesFromItems } from './csv.js?v=202611240200';
-import { readPayslip, toLines } from './payslip.js?v=202611240200';
-import { readBill } from './bill.js?v=202611240200';
-import { parseAfterpay, parseDeferit, mergeRows, isKnown, shopKey, bestShopKey } from './bnpl.js?v=202611240200';
-import { toast, softDelete, busy, friendlyError, watchOnline, info, wireInfoTips, skeleton, wireInstall, applyPrefs, settingsMenu, prefs, setPref, store } from './ui.js?v=202611240200';
-import { columnChart, hbarChart, lineChart, SERIES, moneyRound, moneyCompact } from './charts.js?v=202611240200';
+import { SUPABASE_URL, SUPABASE_PUBLISHABLE_KEY } from './config.js?v=202611240215';
+import { parseBankCsv, parseWestpacActivity, parseLatitudeStatement, isLatitudeStatement, splitAccounts, linesFromItems } from './csv.js?v=202611240215';
+import { readPayslip, toLines } from './payslip.js?v=202611240215';
+import { readBill } from './bill.js?v=202611240215';
+import { parseAfterpay, parseDeferit, mergeRows, isKnown, shopKey, bestShopKey } from './bnpl.js?v=202611240215';
+import { toast, softDelete, busy, friendlyError, watchOnline, info, wireInfoTips, skeleton, wireInstall, applyPrefs, settingsMenu, prefs, setPref, store } from './ui.js?v=202611240215';
+import { columnChart, hbarChart, lineChart, SERIES, moneyRound, moneyCompact } from './charts.js?v=202611240215';
 
 const sb = createClient(SUPABASE_URL, SUPABASE_PUBLISHABLE_KEY);
 const $ = (s, el = document) => el.querySelector(s);
@@ -1242,6 +1242,8 @@ async function importView() {
 }
 
 // ---------- BILLS & INCOME ----------
+const UP_RANGES = [[7, '1 week'], [14, '2 weeks'], [35, '5 weeks'], [61, '2 months'], [92, '3 months'], [183, '6 months']];
+let upDays = (() => { try { const v = Number(localStorage.getItem('upDays')); return UP_RANGES.some(r => r[0] === v) ? v : 35; } catch { return 35; } })();
 async function recurringPage(kind) {
   const isBills = kind === 'bills';
   const dir = isBills ? 'out' : 'in';
@@ -1253,17 +1255,19 @@ async function recurringPage(kind) {
       <div class="who-now">${esc(names[personView])}</div></div>
     <div class="tiles" id="r-tiles"></div>
     <div class="grid2">
-      <section class="card"><div class="sec-head"><div><h2>${isBills ? 'Due' : 'Expected'} in the next 5 weeks</h2><p class="hint">${esc(possessive)} amounts</p></div></div><div id="r-up"></div></section>
+      <section class="card"><div class="sec-head"><div><h2>${isBills ? 'Due' : 'Expected'} in the next</h2><p class="hint">${esc(possessive)} amounts</p></div>
+        <select id="r-range" aria-label="Time range">${UP_RANGES.map(([d, l]) => `<option value="${d}" ${d === upDays ? 'selected' : ''}>${l}</option>`).join('')}</select></div><div id="r-up"></div></section>
       <section class="card"><div class="sec-head"><div><h2>Per month</h2><p class="hint">${esc(possessive)} ${isBills ? 'bills' : 'income'} by source</p></div></div><div id="r-chart"></div></section>
     </div>
     ${isBills ? '' : '<div id="r-cl"></div>'}
     <section class="card" id="r-list"></section>`;
 
 
+  $('#r-range').onchange = e => { upDays = Number(e.target.value); try { localStorage.setItem('upDays', upDays); } catch {} drawTop(); };
   const drawTop = async () => {
     const [itemsAll, up] = await Promise.all([
       q(sb.from('recurring_items').select('*').eq('direction', dir).eq('is_active', true)),
-      q(sb.rpc('upcoming_items', { p_days: 35 })),
+      q(sb.rpc('upcoming_items', { p_days: upDays })),
     ]);
     const items = itemsAll.filter(i => shareFor(i.split) > 0);
     const monthly = i => i.amount * PER_MONTH[i.frequency] * shareFor(i.split);
@@ -1291,7 +1295,7 @@ async function recurringPage(kind) {
         <div class="due-main"><b>${esc(u.name)}</b><div class="hint">${when}${u.debt_id ? ' · loan repayment' : ''}${part}</div></div>
         <div class="due-amt ${isBills ? '' : 'in'}">${money(upShare(u))}</div>
         ${isBills && d <= 7 ? `<button class="small mark-paid" data-id="${u.item_id}" data-due="${u.due_date}">Paid</button>` : '<span></span>'}</li>`; }).join('')}</ul>
-      <p class="hint total-line">Total ${money(sum(mine, upShare))}</p>` : '<p class="empty">Nothing in the next 5 weeks.</p>';
+      <p class="hint total-line">Total ${money(sum(mine, upShare))}</p>` : `<p class="empty">Nothing in the next ${esc(UP_RANGES.find(r => r[0] === upDays)[1])}.</p>`;
     $('#r-up').querySelectorAll('.mark-paid').forEach(b => b.onclick = () => markPaid(b.dataset.id, b.dataset.due, () => recurringPage(kind)));
     hbarChart($('#r-chart'), { items: items.map(i => ({ label: i.name, value: monthly(i),
         note: shareFor(i.split) < 1 ? `${Math.round(shareFor(i.split) * 100)}% of ${money(i.amount * PER_MONTH[i.frequency])}` : null }))
