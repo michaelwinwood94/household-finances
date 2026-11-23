@@ -1,0 +1,2 @@
+-- Applied live: table debt_instalments (owner_id, debt_id, due_date, merchant, amount, is_paid, paid_on) with own-rows RLS.
+-- Holds dated instalments for BNPL debts (Afterpay); the debt's current_balance is the sum of unpaid rows.

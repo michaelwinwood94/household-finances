@@ -1,10 +1,10 @@
 import { createClient } from 'https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2/+esm';
-import { SUPABASE_URL, SUPABASE_PUBLISHABLE_KEY } from './config.js?v=202611231319';
-import { parseBankCsv, parseWestpacActivity, splitAccounts, linesFromItems } from './csv.js?v=202611231319';
-import { readPayslip, toLines } from './payslip.js?v=202611231319';
-import { readBill } from './bill.js?v=202611231319';
-import { toast, softDelete, busy, friendlyError, watchOnline, info, wireInfoTips, skeleton, wireInstall, applyPrefs, settingsMenu, prefs, setPref, store } from './ui.js?v=202611231319';
-import { columnChart, hbarChart, lineChart, SERIES, moneyRound, moneyCompact } from './charts.js?v=202611231319';
+import { SUPABASE_URL, SUPABASE_PUBLISHABLE_KEY } from './config.js?v=202611231734';
+import { parseBankCsv, parseWestpacActivity, splitAccounts, linesFromItems } from './csv.js?v=202611231734';
+import { readPayslip, toLines } from './payslip.js?v=202611231734';
+import { readBill } from './bill.js?v=202611231734';
+import { toast, softDelete, busy, friendlyError, watchOnline, info, wireInfoTips, skeleton, wireInstall, applyPrefs, settingsMenu, prefs, setPref, store } from './ui.js?v=202611231734';
+import { columnChart, hbarChart, lineChart, SERIES, moneyRound, moneyCompact } from './charts.js?v=202611231734';
 
 const sb = createClient(SUPABASE_URL, SUPABASE_PUBLISHABLE_KEY);
 const $ = (s, el = document) => el.querySelector(s);
@@ -1301,7 +1301,27 @@ async function debts() {
   view.innerHTML = `<div class="page-head"><div><h1 class="page-title">Debts</h1><div class="who-now inline">${esc(personName())}</div><p class="hint">Everything owed, with a log of every call to creditors. Home loan balances update when you import.</p></div></div>
     <div class="tiles" id="d-sum"></div>
     <section class="card"><div class="sec-head"><div><h2>Who you owe</h2><p class="hint">${personView === 'all' ? 'Household balances' : esc(personName()) + "'s share of each balance"} · the long bars are the home loans</p></div></div><div id="d-chart"></div></section>
-    <section class="card" id="d-list"></section><section class="card hidden" id="d-log"></section>`;
+    <section class="card" id="d-list"></section><section class="card hidden" id="d-inst"></section><section class="card hidden" id="d-log"></section>`;
+  const instalments = async () => {
+    const box = $('#d-inst');
+    const rows = await q(sb.from('debt_instalments').select('id, debt_id, due_date, merchant, amount, is_paid').order('due_date').order('merchant').limit(1000));
+    if (!rows.length) { box.classList.add('hidden'); return; }
+    box.classList.remove('hidden');
+    const names = Object.fromEntries(cache.debts.map(d => [d.id, d.creditor]));
+    const days = {};
+    rows.forEach(r => (days[r.due_date] ||= []).push(r));
+    const owing = rows.filter(r => !r.is_paid);
+    const in30 = sum(owing.filter(r => r.due_date <= new Date(Date.now() + 30 * 864e5).toLocaleDateString('en-CA')), r => Number(r.amount));
+    box.innerHTML = `<div class="sec-head"><div><h2>Instalments still to pay</h2><p class="hint">${owing.length} left · ${money(sum(owing, r => Number(r.amount)))} in total · ${money(in30)} in the next 30 days. Tick one when it's paid; the debt balance follows.</p></div></div>` +
+      Object.entries(days).map(([d, list], i) => `<details ${i < 2 ? 'open' : ''}><summary><strong>${esc(shortDate(d))}</strong> · ${money(sum(list.filter(r => !r.is_paid), r => Number(r.amount)))} · ${list.length} payment${list.length === 1 ? '' : 's'}</summary>
+        <table class="rpt-tbl"><tbody>${list.map(r => `<tr><td><label><input type="checkbox" class="inst-paid" data-id="${r.id}" data-debt="${r.debt_id}" ${r.is_paid ? 'checked' : ''}> ${esc(r.merchant)}</label></td><td class="num">${money(r.amount)}</td></tr>`).join('')}</tbody></table></details>`).join('');
+    box.querySelectorAll('.inst-paid').forEach(c => c.onchange = async () => {
+      await q(sb.from('debt_instalments').update({ is_paid: c.checked, paid_on: c.checked ? today() : null }).eq('id', c.dataset.id));
+      const left = await q(sb.from('debt_instalments').select('amount').eq('debt_id', c.dataset.debt).eq('is_paid', false));
+      await q(sb.from('debts').update({ current_balance: sum(left, r => Number(r.amount)), balance_as_at: today() }).eq('id', c.dataset.debt));
+      await instalments(); await top(); await list();
+    });
+  };
   const top = async () => {
     const [d, allRows] = await Promise.all([q(sb.from('v_debt_summary').select('*').maybeSingle()), q(sb.from('debts').select('*').eq('status', 'active').order('current_balance', { ascending: false }))]);
     const sd = d || {};
@@ -1331,7 +1351,7 @@ async function debts() {
     });
     $('#d-list').querySelectorAll('.log').forEach(b => b.onclick = () => showLog(current[b.dataset.i]));
   };
-  await Promise.all([top(), list()]);
+  await Promise.all([top(), list(), instalments()]);
 }
 
 // ---------- INSIGHTS (worked out from the transactions; refreshed every morning and after each import) ----------
