@@ -1,11 +1,11 @@
 import { createClient } from 'https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2/+esm';
-import { SUPABASE_URL, SUPABASE_PUBLISHABLE_KEY } from './config.js?v=202611240048';
-import { parseBankCsv, parseWestpacActivity, parseLatitudeStatement, isLatitudeStatement, splitAccounts, linesFromItems } from './csv.js?v=202611240048';
-import { readPayslip, toLines } from './payslip.js?v=202611240048';
-import { readBill } from './bill.js?v=202611240048';
-import { parseAfterpay, parseDeferit, mergeRows, isKnown, shopKey, bestShopKey } from './bnpl.js?v=202611240048';
-import { toast, softDelete, busy, friendlyError, watchOnline, info, wireInfoTips, skeleton, wireInstall, applyPrefs, settingsMenu, prefs, setPref, store } from './ui.js?v=202611240048';
-import { columnChart, hbarChart, lineChart, SERIES, moneyRound, moneyCompact } from './charts.js?v=202611240048';
+import { SUPABASE_URL, SUPABASE_PUBLISHABLE_KEY } from './config.js?v=202611240058';
+import { parseBankCsv, parseWestpacActivity, parseLatitudeStatement, isLatitudeStatement, splitAccounts, linesFromItems } from './csv.js?v=202611240058';
+import { readPayslip, toLines } from './payslip.js?v=202611240058';
+import { readBill } from './bill.js?v=202611240058';
+import { parseAfterpay, parseDeferit, mergeRows, isKnown, shopKey, bestShopKey } from './bnpl.js?v=202611240058';
+import { toast, softDelete, busy, friendlyError, watchOnline, info, wireInfoTips, skeleton, wireInstall, applyPrefs, settingsMenu, prefs, setPref, store } from './ui.js?v=202611240058';
+import { columnChart, hbarChart, lineChart, SERIES, moneyRound, moneyCompact } from './charts.js?v=202611240058';
 
 const sb = createClient(SUPABASE_URL, SUPABASE_PUBLISHABLE_KEY);
 const $ = (s, el = document) => el.querySelector(s);

@@ -219,9 +219,6 @@ export function splitAccounts(parsed) {
 // Latitude loan statement PDF ("Transaction Details": date dd-mm-yyyy, description, Credit, Debit).
 // Loan sign convention (same as the Westpac loan PDFs): repayments/waivers are +, interest and fees are −,
 // so the account balance is the amount owed shown as a negative number.
-const LAT_ROW = /^(\d{2})-(\d{2})-(\d{4})\s+(.*?)\s*\$\s?([\d,]+\.\d{2})\s+\$\s?([\d,]+\.\d{2})\s*$/;
-const LAT_DATE_ONLY = /^(\d{2})-(\d{2})-(\d{4})\b/;
-const LAT_NOAMT_ROW = /^(.*?)\s*\$\s?([\d,]+\.\d{2})\s+\$\s?([\d,]+\.\d{2})\s*$/;
 
 export function isLatitudeStatement(pages) {
   const t = (pages[0] || []).map(i => i.str).join(' ');
@@ -241,27 +238,29 @@ export function parseLatitudeStatement(pages) {
   const due = all.match(/Next Payment Due Date:\s*(\d{2})-(\d{2})-(\d{4})/);
   const stmt = all.match(/Statement date:\s*(\d{2})-(\d{2})-(\d{4})/);
   let start = lines.findIndex(t => /Transaction\s+Description/.test(t));
-  if (start < 0) start = lines.findIndex(t => LAT_ROW.test(t)) - 1;
-  if (start < -1 || (start < 0 && !lines.some(t => LAT_ROW.test(t)))) return { format: 'unknown', rows: [], skipped: [], error: 'This PDF doesn’t look like a Latitude loan statement.' };
+  if (start < 0) start = lines.findIndex(t => /^\d{1,2}[-/.]\d{1,2}[-/.]\d{4}\s.*\$\s?[\d,]+\.\d{2}\s+\$\s?[\d,]+\.\d{2}/.test(t)) - 1;
+  if (start < -1 || (start < 0 && !lines.some(t => /\$\s?[\d,]+\.\d{2}\s+\$\s?[\d,]+\.\d{2}/.test(t)))) return { format: 'unknown', rows: [], skipped: [], error: 'This PDF doesn’t look like a Latitude loan statement.' };
 
   const rows = [], skipped = [];
+  const AMT_G = /\$\s?([\d,]+\.\d{2})/g;
+  const amtsOf = t => [...t.matchAll(AMT_G)].map(m => ({ v: num(m[1]), i: m.index }));
   let pending = null; // date from a wrapped "30-04-2024 14.99%" line, applies to the dateless row after it
   for (const t of lines.slice(start + 1)) {
-    if (/Opening Balance|Closing Balance|^Important Information/.test(t)) { if (/^\d{2}-\d{2}-\d{4}\s+Closing Balance/.test(t)) break; continue; }
-    let d, desc, cr, db;
-    const m = t.match(LAT_ROW);
-    if (m) { d = iso(+m[3], +m[2], +m[1]); desc = m[4]; cr = num(m[5]); db = num(m[6]); pending = null; }
-    else {
-      const dm = t.match(LAT_DATE_ONLY);
-      if (dm) { pending = iso(+dm[3], +dm[2], +dm[1]); continue; }
-      const n = t.match(LAT_NOAMT_ROW);
-      if (n && pending && !/Latitude|ABN/.test(t)) { d = pending; desc = n[1]; cr = num(n[2]); db = num(n[3]); }
-      else continue;
-    }
+    if (/^\d{1,2}[-/.]\d{1,2}[-/.]\d{4}\s+Closing Balance/.test(t)) break;
+    if (/Opening Balance|Closing Balance|^Important Information|Licence Number|^Page \d/.test(t)) continue;
+    const dm = t.match(/^(\d{1,2})[-/.](\d{1,2})[-/.](\d{4})\b\s*(.*)$/);
+    const body = dm ? dm[4] : t;
+    const a = amtsOf(body);
+    let d, desc;
+    if (dm && a.length >= 2) { d = iso(+dm[3], +dm[2], +dm[1]); desc = body.slice(0, a[0].i); pending = null; }
+    else if (dm) { pending = iso(+dm[3], +dm[2], +dm[1]); continue; }
+    else if (a.length >= 2 && pending) { d = pending; desc = body.slice(0, a[0].i); }
+    else continue;
+    const cr = a[0].v, db = a[1].v;
     if (cr === 0 && db === 0) continue; // interest-rate change notes
     rows.push({ date: d, description: desc.replace(/\s+/g, ' ').trim(), amount: Math.round((cr - db) * 100) / 100, balance: null });
   }
-  if (!rows.length) skipped.push({ line: 0, reason: 'no transactions found', raw: '' });
+  if (!rows.length) return { format: 'latitude-pdf', rows: [], skipped: [], error: 'Latitude statement recognised but no transactions could be read. Layout seen: ' + lines.slice(start, start + 4).map(t => t.slice(0, 70)).join(' | ') };
   const toIso = m => m ? iso(+m[3], +m[2], +m[1]) : null;
   return {
     format: 'latitude-pdf',
