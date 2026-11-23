@@ -1,10 +1,10 @@
 import { createClient } from 'https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2/+esm';
-import { SUPABASE_URL, SUPABASE_PUBLISHABLE_KEY } from './config.js?v=202611230940';
-import { parseBankCsv, parseWestpacActivity, splitAccounts, linesFromItems } from './csv.js?v=202611230940';
-import { readPayslip, toLines } from './payslip.js?v=202611230940';
-import { readBill } from './bill.js?v=202611230940';
-import { toast, softDelete, busy, friendlyError, watchOnline, info, wireInfoTips, skeleton, wireInstall, applyPrefs, settingsMenu, prefs, setPref, store } from './ui.js?v=202611230940';
-import { columnChart, hbarChart, lineChart, SERIES, moneyRound, moneyCompact } from './charts.js?v=202611230940';
+import { SUPABASE_URL, SUPABASE_PUBLISHABLE_KEY } from './config.js?v=202611230946';
+import { parseBankCsv, parseWestpacActivity, splitAccounts, linesFromItems } from './csv.js?v=202611230946';
+import { readPayslip, toLines } from './payslip.js?v=202611230946';
+import { readBill } from './bill.js?v=202611230946';
+import { toast, softDelete, busy, friendlyError, watchOnline, info, wireInfoTips, skeleton, wireInstall, applyPrefs, settingsMenu, prefs, setPref, store } from './ui.js?v=202611230946';
+import { columnChart, hbarChart, lineChart, SERIES, moneyRound, moneyCompact } from './charts.js?v=202611230946';
 
 const sb = createClient(SUPABASE_URL, SUPABASE_PUBLISHABLE_KEY);
 const $ = (s, el = document) => el.querySelector(s);
@@ -1469,7 +1469,8 @@ async function taxView() {
   ]);
   const catBy = new Map(cache.categories.map(c => [c.id, c]));
   const boardCat = cache.categories.find(c => /board|rent received/i.test(c.name) && c.kind === 'income');
-  const interestCat = cache.categories.find(c => /^loan interest/i.test(c.name));
+  // the interest category is the one holding the interest (renamed "Loan interest (not counted)"), not an empty duplicate
+  const interestCat = cache.categories.filter(c => /^loan interest/i.test(c.name)).sort((a, b) => (b.kind === 'transfer') - (a.kind === 'transfer'))[0];
   const loans = cache.accounts.filter(a => ['mortgage', 'loan'].includes(a.account_type));
   const boardTx = txns.filter(t => boardCat && t.category_id === boardCat.id && t.amount > 0);
   const boardItem = boardItems.filter(i => boardCat && i.category_id === boardCat.id && i.is_active);
@@ -1496,10 +1497,11 @@ async function taxView() {
   const draw = () => {
     const share = shareFor(st.split, taxWho);
     const who = personName(taxWho);
-    const rFrom = st.rented_from && st.rented_from > fyStart ? st.rented_from : fyStart;
+    const fromDate = st.rented_from || boardTx[0]?.txn_date || null;   // blank = from the first board payment
+    const rFrom = fromDate && fromDate > fyStart ? fromDate : fyStart;
     const rTo = st.rented_to && st.rented_to < periodEnd ? st.rented_to : periodEnd;
     const periodDays = dayDiff(fyStart, periodEnd);
-    const rentedDays = st.rented_from ? Math.max(0, dayDiff(rFrom, rTo)) : 0;
+    const rentedDays = fromDate ? Math.max(0, dayDiff(rFrom, rTo)) : 0;
     const timePct = periodDays ? rentedDays / periodDays : 0;
     const floor = st.floor_pct == null ? null : Number(st.floor_pct) / 100;
     const factor = floor == null ? 0 : floor * timePct;
@@ -1573,7 +1575,8 @@ async function taxView() {
         <div class="tablewrap"><table class="list"><thead><tr><th>Count?</th><th>Cost</th><th class="num">Paid this year</th><th class="num">Claimable (household)</th><th class="num">${esc(who)}</th></tr></thead><tbody>
           ${candidates.map(x => `<tr><td><input type="checkbox" class="t-cat" data-id="${x.id}" ${incl(x.id) ? 'checked' : ''} aria-label="Count ${esc(x.c.name)}"></td>
             <td>${esc(x.c.name.replace(' (not counted)', ''))}${interestCat && x.id === interestCat.id ? `<div class="hint">${loans.map(a => `<label class="mcheck" style="display:inline-block;margin-right:.8rem"><input type="checkbox" class="t-loan" data-id="${a.id}" ${st.included_loan_accounts.includes(a.id) ? 'checked' : ''}> ${esc(a.name)}</label>`).join('')}</div>` : ''}
-              ${/insurance/i.test(x.c.name) ? '<div class="hint">only home &amp; contents / building insurance counts</div>' : ''}</td>
+              ${/insurance/i.test(x.c.name) ? '<div class="hint">only home &amp; contents / building insurance counts</div>' : ''}
+              ${/^mortgage$/i.test(x.c.name) ? `<div class="hint ${incl(x.id) ? 'bad-text' : ''}">Repayments are mostly principal, which can’t be claimed — leave this unticked; the interest is counted under Loan interest.</div>` : ''}</td>
             <td class="num">${money(x.total)}</td><td class="num">${incl(x.id) ? money(x.total * factor) : '<span class="hint">—</span>'}</td><td class="num">${incl(x.id) ? money(x.total * factor * share) : '<span class="hint">—</span>'}</td></tr>`).join('')}
         </tbody><tfoot><tr class="total"><td></td><td><b>Total from bank data</b></td><td></td><td class="num"><b>${money(catClaim)}</b></td><td class="num"><b>${money(catClaim * share)}</b></td></tr></tfoot></table></div>
       </section>
@@ -1597,7 +1600,7 @@ async function taxView() {
           </div>
           ${(st.rooms || []).length ? '' : '<p class="hint"><button class="link" id="r-start">Or list the rooms one by one</button> (more accurate).</p>'}
           <div class="formgrid">
-            <label>Boarders there from <input type="date" id="t-from" value="${esc(st.rented_from ?? '')}"></label>
+            <label>Boarders there from <span class="hint">blank = first board payment${boardTx[0] ? ' (' + esc(fmtDate(boardTx[0].txn_date)) + ')' : ''}</span><input type="date" id="t-from" value="${esc(st.rented_from ?? '')}"></label>
             <label>Until <span class="hint">blank = still there</span><input type="date" id="t-to" value="${esc(st.rented_to ?? '')}"></label>
           </div>
           ${cache.members.length > 1 ? `<div class="field-label">Who owns the house and gets the board</div>${splitEditor('t-split', st.split)}` : ''}

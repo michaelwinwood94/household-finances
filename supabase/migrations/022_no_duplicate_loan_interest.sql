@@ -1,0 +1,1 @@
+-- 022: removed the empty duplicate 'Loan interest' category; seed_defaults no longer re-creates it when 'Loan interest (not counted)' exists
