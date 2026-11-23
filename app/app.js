@@ -1,11 +1,11 @@
 import { createClient } from 'https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2/+esm';
-import { SUPABASE_URL, SUPABASE_PUBLISHABLE_KEY } from './config.js?v=202611232205';
-import { parseBankCsv, parseWestpacActivity, splitAccounts, linesFromItems } from './csv.js?v=202611232205';
-import { readPayslip, toLines } from './payslip.js?v=202611232205';
-import { readBill } from './bill.js?v=202611232205';
-import { parseAfterpay, parseDeferit, mergeRows, isKnown, shopKey, bestShopKey } from './bnpl.js?v=202611232205';
-import { toast, softDelete, busy, friendlyError, watchOnline, info, wireInfoTips, skeleton, wireInstall, applyPrefs, settingsMenu, prefs, setPref, store } from './ui.js?v=202611232205';
-import { columnChart, hbarChart, lineChart, SERIES, moneyRound, moneyCompact } from './charts.js?v=202611232205';
+import { SUPABASE_URL, SUPABASE_PUBLISHABLE_KEY } from './config.js?v=202611240001';
+import { parseBankCsv, parseWestpacActivity, parseLatitudeStatement, isLatitudeStatement, splitAccounts, linesFromItems } from './csv.js?v=202611240001';
+import { readPayslip, toLines } from './payslip.js?v=202611240001';
+import { readBill } from './bill.js?v=202611240001';
+import { parseAfterpay, parseDeferit, mergeRows, isKnown, shopKey, bestShopKey } from './bnpl.js?v=202611240001';
+import { toast, softDelete, busy, friendlyError, watchOnline, info, wireInfoTips, skeleton, wireInstall, applyPrefs, settingsMenu, prefs, setPref, store } from './ui.js?v=202611240001';
+import { columnChart, hbarChart, lineChart, SERIES, moneyRound, moneyCompact } from './charts.js?v=202611240001';
 
 const sb = createClient(SUPABASE_URL, SUPABASE_PUBLISHABLE_KEY);
 const $ = (s, el = document) => el.querySelector(s);
@@ -1117,7 +1117,7 @@ async function importView() {
       let parsed;
       try {
         parsed = /\.pdf$/i.test(file.name) || file.type === 'application/pdf'
-          ? parseWestpacActivity(await readPdfItems(file))
+          ? await (async () => { const pg = await readPdfItems(file); return isLatitudeStatement(pg) ? parseLatitudeStatement(pg) : parseWestpacActivity(pg); })()
           : parseBankCsv(await file.text());
       } catch (err) { parsed = { format: 'unknown', rows: [], skipped: [], error: 'Could not read this file: ' + err.message }; }
       for (const part of (parsed.error ? [parsed] : splitAccounts(parsed))) parsedFiles.push({ file, parsed: part });
@@ -1195,6 +1195,19 @@ async function importView() {
         for (let k = 0; k < rows.length; k += 1000) {
           const res = await q(sb.rpc('import_transactions', { p_account_id: accountId, p_rows: rows.slice(k, k + 1000), p_filename: j.file.name, p_format: p.format }));
           for (const key in tot) tot[key] += res[key] || 0;
+        }
+        if (p.statement) {
+          // Statement figures are the lender's own: keep the Latitude debt in step with them
+          const st = p.statement;
+          const d = (await q(sb.from('debts').select('id, creditor, account_id').eq('status', 'active').ilike('creditor', '%latitude%').limit(1)))[0];
+          if (d) {
+            const upd = { current_balance: st.closing, balance_as_at: st.date || today(), account_id: d.account_id || accountId };
+            if (st.overdue != null) upd.arrears_amount = st.overdue;
+            if (st.minPayment != null) { upd.min_payment = st.minPayment; upd.payment_frequency = 'monthly'; }
+            if (st.rate != null) upd.interest_rate_pct = st.rate;
+            await q(sb.from('debts').update(upd).eq('id', d.id));
+            results.push(`<li><b>${esc(d.creditor)}</b> updated from the statement: owing ${money(st.closing)}${st.overdue != null ? `, overdue ${money(st.overdue)}` : ''}${st.minPayment != null ? `, minimum ${money(st.minPayment)}/month` : ''}${st.rate != null ? `, ${st.rate}%` : ''}${st.due ? `, next due ${esc(fmtDate(st.due))}` : ''}</li>`);
+          }
         }
         results.push(`<li><b>${esc(j.file.name)}</b> → ${esc(refName('accounts', accountId))}: ${tot.inserted} new, ${tot.duplicates} already there, ${tot.linked_to_bills} matched to bills, ${tot.shared_added} added to shared costs</li>`);
       }

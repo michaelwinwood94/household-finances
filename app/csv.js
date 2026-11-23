@@ -215,3 +215,58 @@ export function splitAccounts(parsed) {
     account: { name: null, last4: acct.slice(-4) || '', number: acct, balance: null },
   }));
 }
+
+// Latitude loan statement PDF ("Transaction Details": date dd-mm-yyyy, description, Credit, Debit).
+// Loan sign convention (same as the Westpac loan PDFs): repayments/waivers are +, interest and fees are −,
+// so the account balance is the amount owed shown as a negative number.
+const LAT_ROW = /^(\d{2})-(\d{2})-(\d{4})\s+(.*?)\s*\$([\d,]+\.\d{2})\s+\$([\d,]+\.\d{2})\s*$/;
+const LAT_DATE_ONLY = /^(\d{2})-(\d{2})-(\d{4})\b/;
+const LAT_NOAMT_ROW = /^(.*?)\s*\$([\d,]+\.\d{2})\s+\$([\d,]+\.\d{2})\s*$/;
+
+export function isLatitudeStatement(pages) {
+  const t = (pages[0] || []).map(i => i.str).join(' ');
+  return /Latitude/i.test(t) && /Transaction Description/i.test(pages.flat().map(i => i.str).join(' ')) && /Account Number/i.test(t);
+}
+
+export function parseLatitudeStatement(pages) {
+  const lines = linesFromItems(pages).map(l => l.text);
+  const all = lines.join('\n');
+  const num = s => Number(s.replace(/,/g, ''));
+  const grab = re => { const m = all.match(re); return m ? m[1] : null; };
+  const acctNo = grab(/Account Number:\s*([A-Z0-9-]+)/);
+  const closing = grab(/\d{2}-\d{2}-\d{4}\s+Closing Balance\s+\$([\d,]+\.\d{2})/) || grab(/Closing Balance as at \d{2}-\d{2}-\d{4}\s+\$([\d,]+\.\d{2})/);
+  const overdue = grab(/Amount overdue\s*\*?\s*:\s*\$([\d,]+\.\d{2})/);
+  const minPay = grab(/Minimum Monthly Payment:\s*\$([\d,]+\.\d{2})/);
+  const rate = grab(/Current Interest Rate:\s*([\d.]+)%/);
+  const due = all.match(/Next Payment Due Date:\s*(\d{2})-(\d{2})-(\d{4})/);
+  const stmt = all.match(/Statement date:\s*(\d{2})-(\d{2})-(\d{4})/);
+  const start = lines.findIndex(t => /Transaction Description/.test(t));
+  if (start < 0 || closing == null) return { format: 'unknown', rows: [], skipped: [], error: 'This PDF doesn’t look like a Latitude loan statement.' };
+
+  const rows = [], skipped = [];
+  let pending = null; // date from a wrapped "30-04-2024 14.99%" line, applies to the dateless row after it
+  for (const t of lines.slice(start + 1)) {
+    if (/Opening Balance|Closing Balance|^Important Information/.test(t)) { if (/^\d{2}-\d{2}-\d{4}\s+Closing Balance/.test(t)) break; continue; }
+    let d, desc, cr, db;
+    const m = t.match(LAT_ROW);
+    if (m) { d = iso(+m[3], +m[2], +m[1]); desc = m[4]; cr = num(m[5]); db = num(m[6]); pending = null; }
+    else {
+      const dm = t.match(LAT_DATE_ONLY);
+      if (dm) { pending = iso(+dm[3], +dm[2], +dm[1]); continue; }
+      const n = t.match(LAT_NOAMT_ROW);
+      if (n && pending && !/Latitude|ABN/.test(t)) { d = pending; desc = n[1]; cr = num(n[2]); db = num(n[3]); }
+      else continue;
+    }
+    if (cr === 0 && db === 0) continue; // interest-rate change notes
+    rows.push({ date: d, description: desc.replace(/\s+/g, ' ').trim(), amount: Math.round((cr - db) * 100) / 100, balance: null });
+  }
+  if (!rows.length) skipped.push({ line: 0, reason: 'no transactions found', raw: '' });
+  const toIso = m => m ? iso(+m[3], +m[2], +m[1]) : null;
+  return {
+    format: 'latitude-pdf',
+    account: { name: 'Latitude personal loan', last4: acctNo ? acctNo.replace(/\W/g, '').slice(-4) : '', balance: -num(closing) },
+    statement: { closing: num(closing), overdue: overdue != null ? num(overdue) : null, minPayment: minPay != null ? num(minPay) : null,
+      rate: rate != null ? Number(rate) : null, due: toIso(due), date: toIso(stmt) },
+    rows: rows.sort((a, b) => a.date < b.date ? -1 : a.date > b.date ? 1 : 0), skipped: skipped.filter(s => s.line),
+  };
+}
