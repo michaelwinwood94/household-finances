@@ -1,0 +1,2 @@
+-- Applied live: debt_instalments.category_id (fk categories, on delete set null); existing instalments categorised by merchant
+-- (groceries, fuel, shopping, takeaway, pharmacy, kids & activities, water, phone, power, other). Editable per shop on Debts.

@@ -1,10 +1,10 @@
 import { createClient } from 'https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2/+esm';
-import { SUPABASE_URL, SUPABASE_PUBLISHABLE_KEY } from './config.js?v=202611232040';
-import { parseBankCsv, parseWestpacActivity, splitAccounts, linesFromItems } from './csv.js?v=202611232040';
-import { readPayslip, toLines } from './payslip.js?v=202611232040';
-import { readBill } from './bill.js?v=202611232040';
-import { toast, softDelete, busy, friendlyError, watchOnline, info, wireInfoTips, skeleton, wireInstall, applyPrefs, settingsMenu, prefs, setPref, store } from './ui.js?v=202611232040';
-import { columnChart, hbarChart, lineChart, SERIES, moneyRound, moneyCompact } from './charts.js?v=202611232040';
+import { SUPABASE_URL, SUPABASE_PUBLISHABLE_KEY } from './config.js?v=202611232105';
+import { parseBankCsv, parseWestpacActivity, splitAccounts, linesFromItems } from './csv.js?v=202611232105';
+import { readPayslip, toLines } from './payslip.js?v=202611232105';
+import { readBill } from './bill.js?v=202611232105';
+import { toast, softDelete, busy, friendlyError, watchOnline, info, wireInfoTips, skeleton, wireInstall, applyPrefs, settingsMenu, prefs, setPref, store } from './ui.js?v=202611232105';
+import { columnChart, hbarChart, lineChart, SERIES, moneyRound, moneyCompact } from './charts.js?v=202611232105';
 
 const sb = createClient(SUPABASE_URL, SUPABASE_PUBLISHABLE_KEY);
 const $ = (s, el = document) => el.querySelector(s);
@@ -1306,17 +1306,28 @@ async function debts() {
     <section class="card" id="d-list"></section><section class="card hidden" id="d-inst"></section><section class="card hidden" id="d-log"></section>`;
   const instalments = async () => {
     const box = $('#d-inst');
-    const rows = await q(sb.from('debt_instalments').select('id, debt_id, due_date, merchant, amount, is_paid, auto_matched').order('due_date').order('merchant').limit(1000));
+    const rows = await q(sb.from('debt_instalments').select('id, debt_id, due_date, merchant, amount, is_paid, auto_matched, category_id').order('due_date').order('merchant').limit(1000));
     if (!rows.length) { box.classList.add('hidden'); return; }
     box.classList.remove('hidden');
     const names = Object.fromEntries(cache.debts.map(d => [d.id, d.creditor]));
     const days = {};
     rows.forEach(r => (days[r.due_date] ||= []).push(r));
     const owing = rows.filter(r => !r.is_paid);
+    const byCat = {}, mer = {};
+    owing.forEach(r => { byCat[r.category_id || ''] = (byCat[r.category_id || ''] || 0) + Number(r.amount); const k = r.debt_id + '|' + r.merchant; (mer[k] ||= { debt_id: r.debt_id, merchant: r.merchant, category_id: r.category_id, owing: 0 }).owing += Number(r.amount); });
+    const merchants = Object.values(mer).sort((a, b) => b.owing - a.owing);
     const in30 = sum(owing.filter(r => r.due_date <= new Date(Date.now() + 30 * 864e5).toLocaleDateString('en-CA')), r => Number(r.amount));
-    box.innerHTML = `<div class="sec-head"><div><h2>Instalments still to pay</h2><p class="hint">${owing.length} left · ${money(sum(owing, r => Number(r.amount)))} in total · ${money(in30)} in the next 30 days. Tick one when it's paid; the debt balance follows.</p></div></div>` +
+    box.innerHTML = `<div class="sec-head"><div><h2>Instalments still to pay</h2><p class="hint">${owing.length} left · ${money(sum(owing, r => Number(r.amount)))} in total · ${money(in30)} in the next 30 days. Tick one when it's paid; the debt balance follows.</p></div></div>
+      <h3>What it was spent on</h3><div id="d-inst-cat"></div>
+      <details class="fold"><summary><span class="hint">Change a shop's category</span></summary><div class="tablewrap"><table class="list"><tbody>${merchants.map(m => `<tr><td>${esc(m.merchant)} <span class="hint">${esc(names[m.debt_id] || '')}</span></td><td class="num">${money(m.owing)}</td><td><select class="inst-cat" data-debt="${m.debt_id}" data-merchant="${esc(m.merchant)}" aria-label="Category for ${esc(m.merchant)}">${catOptions(m.category_id, { blank: '— choose —' })}</select></td></tr>`).join('')}</tbody></table></div></details>
+      <h3>Due dates</h3>` +
       Object.entries(days).map(([d, list], i) => `<details ${i < 2 ? 'open' : ''}><summary><strong>${esc(shortDate(d))}</strong> · ${money(sum(list.filter(r => !r.is_paid), r => Number(r.amount)))} · ${list.length} payment${list.length === 1 ? '' : 's'}</summary>
         <table class="rpt-tbl"><tbody>${list.map(r => `<tr><td><label><input type="checkbox" class="inst-paid" data-id="${r.id}" data-debt="${r.debt_id}" ${r.is_paid ? 'checked' : ''}> ${esc(r.merchant)}${r.auto_matched ? ' <span class="tag" title="Matched to a bank payment. Untick to undo.">auto-matched</span>' : ''}</label></td><td class="num">${money(r.amount)}</td></tr>`).join('')}</tbody></table></details>`).join('');
+    hbarChart($('#d-inst-cat'), { items: Object.entries(byCat).map(([id, v]) => ({ label: id ? (cache.categories.find(c => c.id === id)?.name || 'Other') : 'Not categorised', value: v })).sort((a, b) => b.value - a.value), color: SERIES.orange, empty: 'Nothing owing.' });
+    box.querySelectorAll('.inst-cat').forEach(sel => sel.onchange = async () => {
+      await q(sb.from('debt_instalments').update({ category_id: sel.value || null }).eq('debt_id', sel.dataset.debt).eq('merchant', sel.dataset.merchant));
+      toast('Category saved'); await instalments();
+    });
     box.querySelectorAll('.inst-paid').forEach(c => c.onchange = async () => {
       await q(sb.from('debt_instalments').update(c.checked ? { is_paid: true, paid_on: today(), match_ignored: false } : { is_paid: false, paid_on: null, matched_txn_id: null, auto_matched: false, match_ignored: true }).eq('id', c.dataset.id));
       const left = await q(sb.from('debt_instalments').select('amount').eq('debt_id', c.dataset.debt).eq('is_paid', false));
