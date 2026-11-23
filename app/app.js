@@ -1,11 +1,11 @@
 import { createClient } from 'https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2/+esm';
-import { SUPABASE_URL, SUPABASE_PUBLISHABLE_KEY } from './config.js?v=202611240215';
-import { parseBankCsv, parseWestpacActivity, parseLatitudeStatement, isLatitudeStatement, splitAccounts, linesFromItems } from './csv.js?v=202611240215';
-import { readPayslip, toLines } from './payslip.js?v=202611240215';
-import { readBill } from './bill.js?v=202611240215';
-import { parseAfterpay, parseDeferit, mergeRows, isKnown, shopKey, bestShopKey } from './bnpl.js?v=202611240215';
-import { toast, softDelete, busy, friendlyError, watchOnline, info, wireInfoTips, skeleton, wireInstall, applyPrefs, settingsMenu, prefs, setPref, store } from './ui.js?v=202611240215';
-import { columnChart, hbarChart, lineChart, SERIES, moneyRound, moneyCompact } from './charts.js?v=202611240215';
+import { SUPABASE_URL, SUPABASE_PUBLISHABLE_KEY } from './config.js?v=202611240235';
+import { parseBankCsv, parseWestpacActivity, parseWestpacOcr, parseLatitudeStatement, isLatitudeStatement, splitAccounts, linesFromItems } from './csv.js?v=202611240235';
+import { readPayslip, toLines } from './payslip.js?v=202611240235';
+import { readBill } from './bill.js?v=202611240235';
+import { parseAfterpay, parseDeferit, mergeRows, isKnown, shopKey, bestShopKey } from './bnpl.js?v=202611240235';
+import { toast, softDelete, busy, friendlyError, watchOnline, info, wireInfoTips, skeleton, wireInstall, applyPrefs, settingsMenu, prefs, setPref, store } from './ui.js?v=202611240235';
+import { columnChart, hbarChart, lineChart, SERIES, moneyRound, moneyCompact } from './charts.js?v=202611240235';
 
 const sb = createClient(SUPABASE_URL, SUPABASE_PUBLISHABLE_KEY);
 const $ = (s, el = document) => el.querySelector(s);
@@ -1086,7 +1086,7 @@ async function importView() {
   const freshHtml = fresh.length ? `<div class="chips">${fresh.map(a => { const d = a.last_transaction_date ? -daysFromToday(a.last_transaction_date) : null;
     return `<span class="chip"><span class="fresh"><span class="fresh-dot ${d == null || d > 14 ? 'stale' : d > 7 ? 'old' : ''}"></span>${esc(a.name)}: ${d == null ? 'no data yet' : 'up to ' + fmtDate(a.last_transaction_date)}</span></span>${(l => l ? `<a class="chip link-chip" href="${esc(l.url)}" target="_blank" rel="noopener noreferrer">Open ${esc(l.name)} ↗</a>` : '')(linkFor({ account_id: a.id }))}`; }).join('')}</div>` : '';
   view.innerHTML = `<div class="page-head"><div><h1 class="page-title">Import</h1><p class="hint">Add statements: CommBank or Westpac CSV, the Westpac Account activity PDF, or a Latitude loan statement PDF.</p></div></div>${freshHtml}<div class="card"><h2>Choose files</h2>
-    <p class="hint">Choose one or more files at once: <b>CSV</b> exports from CommBank or Westpac, the <b>Account activity PDF</b> from the Westpac app, or a <b>Latitude loan statement</b> (PDF eStatement — it also updates the Latitude debt).
+    <p class="hint">Choose one or more files at once: <b>CSV</b> exports from CommBank or Westpac, the <b>Account activity PDF</b> from the Westpac app, a <b>Latitude loan statement</b> (PDF eStatement — it also updates the Latitude debt), or a Westpac Account activity page saved as a PDF from the browser (read by text recognition — may take a few seconds a page).
     Each file is matched to an account (or a new account is set up for you). Importing the same dates twice is safe — duplicates are skipped.</p>
     <label>Statement files <input type="file" id="i-file" accept=".csv,text/csv,.pdf,application/pdf" multiple></label>
     <div id="i-preview"></div></div>
@@ -1117,7 +1117,15 @@ async function importView() {
       let parsed;
       try {
         parsed = /\.pdf$/i.test(file.name) || file.type === 'application/pdf'
-          ? await (async () => { const pg = await readPdfItems(file); return isLatitudeStatement(pg) ? parseLatitudeStatement(pg) : parseWestpacActivity(pg); })()
+          ? await (async () => {
+              const pg = await readPdfItems(file);
+              if (isLatitudeStatement(pg)) return parseLatitudeStatement(pg);
+              if (pg.flat().length < 15) {   // a picture-only PDF (e.g. a printed Westpac page): read it by text recognition
+                pv.innerHTML = `<p>Scanned PDF — reading ${esc(file.name)}…</p>`;
+                return parseWestpacOcr(await ocrPdfPages(file, (pgNo, n, pct) => { pv.innerHTML = `<p>Scanned PDF — reading ${esc(file.name)}: page ${pgNo} of ${n}${pct != null ? ' · ' + pct + '%' : ''}…</p>`; }));
+              }
+              return parseWestpacActivity(pg);
+            })()
           : parseBankCsv(await file.text());
       } catch (err) { parsed = { format: 'unknown', rows: [], skipped: [], error: 'Could not read this file: ' + err.message }; }
       for (const part of (parsed.error ? [parsed] : splitAccounts(parsed))) parsedFiles.push({ file, parsed: part });
@@ -1146,7 +1154,7 @@ async function importView() {
           const outs = -p.rows.filter(r => r.amount < 0).reduce((s, r) => s + r.amount, 0);
           return `<tr><td>${esc(j.file.name)}<br><span class="hint">${esc(label(p.format))}${p.account?.name ? ' · ' + esc(p.account.name) : ''}${p.account?.last4 ? ' · account …' + esc(p.account.last4) : ''}</span></td>
             <td><b>${p.rows.length}</b> transactions<br><span class="hint">${esc(fmtDate(dates[0]))} – ${esc(fmtDate(dates.at(-1)))}<br>in ${money(ins)} · out ${money(outs)}${p.account?.balance != null ? '<br>balance now ' + money(p.account.balance) : ''}</span>
-              ${p.skipped.length ? `<br><span class="msg error">${p.skipped.length} line(s) skipped</span>` : ''}</td>
+              ${p.skipped.length ? `<br><span class="msg error">${p.skipped.length} line(s) skipped</span>` : ''}${(p.notes || []).map(n => `<br><span class="hint">${esc(n)}</span>`).join('')}</td>
             <td><select data-i="${i}" class="j-acct"><option value="new" ${j.accountId === 'new' ? 'selected' : ''}>+ New account</option>
               ${cache.accounts.map(a => `<option value="${a.id}" ${a.id === j.accountId ? 'selected' : ''}>${esc(a.name)}</option>`).join('')}</select>
               ${j.accountId === 'new' ? `<input class="j-name" data-i="${i}" value="${esc(j.newName)}" aria-label="New account name">
@@ -1182,6 +1190,17 @@ async function importView() {
           if (acct && hasBal && open.date < acct.opening_date) {
             await q(sb.from('accounts').update({ opening_balance: open.balance, opening_date: open.date }).eq('id', accountId));
           }
+        }
+        if (p.format === 'westpac-pdf-scan') {
+          // Text recognition can misread a letter. Where the same date and amount are already on file, keep the stored
+          // wording so the row is recognised as a duplicate instead of being added twice.
+          const dts = p.rows.map(r => r.date).sort();
+          const have = []; for (let from = 0; ; from += 1000) {
+            const chunk = await q(sb.from('transactions').select('txn_date, amount, description').eq('account_id', accountId).gte('txn_date', dts[0]).lte('txn_date', dts.at(-1)).order('id').range(from, from + 999));
+            have.push(...chunk); if (chunk.length < 1000) break;
+          }
+          const pool = new Map(); for (const t of have) { const k = `${t.txn_date}|${Number(t.amount).toFixed(2)}`; if (!pool.has(k)) pool.set(k, []); pool.get(k).push(t.description); }
+          p.rows.forEach(r => { const list = pool.get(`${r.date}|${r.amount.toFixed(2)}`); if (list?.length) r.description = list.shift(); });
         }
         // Number identical same-day transactions across the whole file, so two genuine
         // $25 payments on the same day are never mistaken for a duplicate when sent in chunks.
@@ -2070,6 +2089,26 @@ async function ocr(image, progress) {
     const { data } = await worker.recognize(image);
     return toLines(data.text);
   } finally { await worker.terminate(); }
+}
+// Every page of a picture-only PDF through text recognition; returns the lines of each page
+async function ocrPdfPages(file, progress) {
+  await readPdfItems(file).catch(() => {});           // makes sure pdf.js is loaded
+  const T = await loadTesseract();
+  const pdf = await pdfjsLib.getDocument({ data: await file.arrayBuffer() }).promise;
+  let cur = 0;
+  const worker = await T.createWorker('eng', 1, { logger: m => m.status === 'recognizing text' && progress(cur, pdf.numPages, Math.round(m.progress * 100)) });
+  const out = [];
+  try {
+    await worker.setParameters({ tessedit_pageseg_mode: '6' });
+    for (let i = 1; i <= pdf.numPages; i++) {
+      cur = i; progress(i, pdf.numPages, 0);
+      const page = await pdf.getPage(i), vp = page.getViewport({ scale: 2.2 });
+      const canvas = document.createElement('canvas'); canvas.width = vp.width; canvas.height = vp.height;
+      await page.render({ canvasContext: canvas.getContext('2d'), viewport: vp }).promise;
+      out.push((await worker.recognize(canvas)).data.text.split('\n'));
+    }
+  } finally { await worker.terminate(); }
+  return out;
 }
 async function scanPayslipFile(file, progress, what = 'payslip') {
   if (/\.pdf$/i.test(file.name) || file.type === 'application/pdf') {

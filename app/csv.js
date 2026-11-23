@@ -273,3 +273,60 @@ export function parseLatitudeStatement(pages) {
     rows: rows.sort((a, b) => a.date < b.date ? -1 : a.date > b.date ? 1 : 0), skipped: skipped.filter(s => s.line),
   };
 }
+
+// Westpac "Account activity" page saved as a picture-only PDF (browser Print → Save as PDF): read by text
+// recognition, so each page arrives as plain lines. Running balances are used to check every amount and to
+// fill in any amount that was hidden (for example under the "Need help? Chat with us" box).
+export function parseWestpacOcr(pages) {
+  const lines = pages.flat().map(t => String(t).replace(/\s+/g, ' ').trim()).filter(Boolean);
+  const head = lines.join('\n');
+  if (!/Account activity/i.test(head) || !/Debit\s+Credit\s+Balance/i.test(head))
+    return { format: 'unknown', rows: [], skipped: [], error: 'This scanned PDF doesn’t look like a Westpac "Account activity" page.' };
+  const title = lines.find(t => / - Account activity - Westpac/i.test(t));
+  const name = title ? title.replace(/^.*?\d{1,2}:\d{2}\s?[AP]M\s+/i, '').replace(/\s*-\s*Account activity.*$/i, '').trim() : '';
+  const num = head.match(/\b\d{3}-\d{3}\s+(\d{4,})\b/);
+  const last4 = num ? num[1].slice(-4) : '';
+  const R = /^(\d{1,2}) ([A-Z][a-z]{2}) (\d{4})\s+(.*)$/;
+  const A = /-?\$\s?[\d,]+\.\d{2}/g;
+  const money = s => { const neg = s.startsWith('-'); const v = Number(s.replace(/[^\d.]/g, '')); return neg ? -v : v; };
+  const raw = [];
+  for (const t of lines) {
+    const m = t.match(R); if (!m || !MONTHS[m[2].toLowerCase()]) continue;
+    const body = m[4].replace(/(\$\s?[\d,]*\d),(\d{2})(?=\s|$)/g, '$1.$2');   // a decimal point misread as a comma
+    const am = [...body.matchAll(A)];
+    const desc = (am.length ? body.slice(0, am[0].index) : body).replace(/[\s.|_]+$/, '').replace(/^[\s|_]+/, '').trim();
+    raw.push({ date: iso(+m[3], MONTHS[m[2].toLowerCase()], +m[1]), description: desc || '(no description)', vals: am.map(x => money(x[0])) });
+  }
+  // newest first: [amount, balance], or a lone value that is either the balance (amount hidden) or the amount
+  const r2 = x => Math.round(x * 100) / 100;
+  raw.forEach((r, i) => {
+    if (r.vals.length >= 2) { r.amount = r.vals[0]; r.balance = r.vals[r.vals.length - 1]; }
+    else if (r.vals.length === 1) {
+      const prev = raw[i - 1];
+      const v = r.vals[0];
+      const isBal = i === 0 || !prev || prev.balance == null ? false
+        : (prev.amount != null && Math.abs((prev.balance - v) - prev.amount) < 0.005) || Math.abs(v - prev.balance) < Math.abs(prev.balance) * 0.5;
+      if (isBal) r.balance = r.vals[0]; else r.amount = r.vals[0];
+    }
+  });
+  // a lone first value is the balance when the page-header balance matches it
+  const hb = head.match(/^\s*(-?\$[\d,]+\.\d{2})\s*$/m);
+  if (raw[0] && raw[0].amount != null && raw[0].balance == null && hb && Math.abs(money(hb[1]) - raw[0].vals[0]) < 0.005) { raw[0].balance = raw[0].amount; raw[0].amount = null; }
+  let fixed = 0, hidden = 0;
+  raw.forEach((r, i) => {
+    const next = raw[i + 1];
+    if (r.balance != null && next && next.balance != null) {
+      const d = r2(r.balance - next.balance);
+      if (r.amount == null) { r.amount = d; hidden++; }
+      else if (Math.abs(r.amount - d) > 0.005) { r.amount = d; fixed++; }
+    }
+  });
+  const rows = [], skipped = [];
+  raw.forEach((r, i) => { if (r.amount == null) skipped.push({ line: i + 1, reason: 'amount not found', raw: r.description }); else rows.push({ date: r.date, description: r.description, amount: r2(r.amount), balance: r.balance ?? null }); });
+  const notes = [];
+  const more = head.match(/Showing (\d+) of (\d+)/i);
+  if (more && +more[1] < +more[2]) notes.push(`Westpac only showed ${more[1]} of ${more[2]} — click “Display more” before saving the page to get the rest.`);
+  if (hidden || fixed) notes.push(`${hidden ? hidden + ' hidden amount' + (hidden > 1 ? 's' : '') + ' worked out from the running balance' : ''}${hidden && fixed ? '; ' : ''}${fixed ? fixed + ' misread amount' + (fixed > 1 ? 's' : '') + ' corrected from the running balance' : ''}.`);
+  const hbal = hb ? money(hb[1]) : null;
+  return { format: 'westpac-pdf-scan', account: { name, last4, balance: hbal }, rows, skipped, notes };
+}
