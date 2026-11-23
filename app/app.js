@@ -1,10 +1,10 @@
 import { createClient } from 'https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2/+esm';
-import { SUPABASE_URL, SUPABASE_PUBLISHABLE_KEY } from './config.js?v=202611230853';
-import { parseBankCsv, parseWestpacActivity, splitAccounts, linesFromItems } from './csv.js?v=202611230853';
-import { readPayslip, toLines } from './payslip.js?v=202611230853';
-import { readBill } from './bill.js?v=202611230853';
-import { toast, softDelete, busy, friendlyError, watchOnline, info, wireInfoTips, skeleton, wireInstall, applyPrefs, settingsMenu, prefs, setPref, store } from './ui.js?v=202611230853';
-import { columnChart, hbarChart, lineChart, SERIES, moneyRound, moneyCompact } from './charts.js?v=202611230853';
+import { SUPABASE_URL, SUPABASE_PUBLISHABLE_KEY } from './config.js?v=202611230925';
+import { parseBankCsv, parseWestpacActivity, splitAccounts, linesFromItems } from './csv.js?v=202611230925';
+import { readPayslip, toLines } from './payslip.js?v=202611230925';
+import { readBill } from './bill.js?v=202611230925';
+import { toast, softDelete, busy, friendlyError, watchOnline, info, wireInfoTips, skeleton, wireInstall, applyPrefs, settingsMenu, prefs, setPref, store } from './ui.js?v=202611230925';
+import { columnChart, hbarChart, lineChart, SERIES, moneyRound, moneyCompact } from './charts.js?v=202611230925';
 
 const sb = createClient(SUPABASE_URL, SUPABASE_PUBLISHABLE_KEY);
 const $ = (s, el = document) => el.querySelector(s);
@@ -293,7 +293,7 @@ function readSplit(root, name) {
   return out;
 }
 // Pages that change with the person switch; others show household figures and say so
-const PERSON_PAGES = ['dashboard', 'budget', 'bills', 'income', 'debts', 'pay', 'tax'];
+const PERSON_PAGES = ['dashboard', 'budget', 'bills', 'income', 'debts', 'pay', 'tax', 'report'];
 function renderWhoSwitch() {
   const box = $('#whoswitch'); if (!box) return;
   box.classList.toggle('single', cache.members.length < 2);
@@ -1931,6 +1931,227 @@ async function shared() {
   await Promise.all([bal(), renderCrud($('#s-list'), 'shared_ledger', { onChange: async () => { await bal(); await shared(); } })]);
 }
 
+// ---------- REPORT: Statement of Financial Position for hardship calls & financial counsellors ----------
+const RPT_FREQ = { weekly: { label: 'week', f: 12 / 52 }, fortnightly: { label: 'fortnight', f: 12 / 26 }, monthly: { label: 'month', f: 1 } };
+const EXP_GROUPS = [
+  ['Housing & utilities', /rates|water|power|electric|gas\b|strata|body corp|rent(?! received)|repair|maintenance|home/i],
+  ['Phone & internet', /phone|internet|mobile|nbn/i],
+  ['Food & groceries', /grocer|takeaway|eating|food|meal/i],
+  ['Transport', /fuel|car cost|transport|rego|registration|parking|toll|petrol/i],
+  ['Insurance', /insurance/i],
+  ['Medical & health', /medical|pharmacy|health|doctor|dental|chemist/i],
+  ['Children & education', /kid|child|school|education|daycare/i],
+  ['Personal & other', /.*/],
+];
+const DEBT_CATS = /mortgage|bnpl|afterpay|debt|loan|latitude|credit card|zip/i;
+const RPT_QUESTIONS = [
+  ['reason', 'Why are you in financial difficulty?', 'e.g. released from prison and on JobSeeker; separated; reduced income — what happened and when'],
+  ['changes', 'What has changed / is it short or long term?', 'e.g. looking for work, expect income to change in 3 months'],
+  ['asking', 'What are you asking for?', 'e.g. pause repayments for 3 months, interest-only, reduce to $X a fortnight, waive fees'],
+  ['employment', 'Work / income situation', 'e.g. unemployed, on JobSeeker; partner on Carer Payment'],
+  ['home_value', 'Home — estimated value', 'e.g. about $520,000 (from a recent valuation)'],
+  ['vehicles', 'Vehicles (make, year, value, any loan)', 'e.g. 2012 Hilux, about $12,000, owned outright'],
+  ['super', 'Superannuation balance(s)', 'e.g. about $18,000 with AustralianSuper'],
+  ['other_assets', 'Other assets', 'e.g. tools of trade, savings elsewhere — or none'],
+  ['other', 'Anything else they should know', 'e.g. health, dependants, safety, other help already received'],
+];
+let rptFreq = (() => { try { return localStorage.getItem('rptFreq') || 'fortnightly'; } catch { return 'fortnightly'; } })();
+async function reportView() {
+  const now = new Date(), m0 = new Date(now.getFullYear(), now.getMonth() - 3, 1).toLocaleDateString('en-CA'), m1 = new Date(now.getFullYear(), now.getMonth(), 1).toLocaleDateString('en-CA');
+  const [items, txns, debtsRaw, contacts, bal, ins] = await Promise.all([
+    q(sb.from('recurring_items').select('*').eq('is_active', true)),
+    q(sb.from('transactions').select('amount, category_id, account_id, txn_date, recurring_item_id').gte('txn_date', m0).lt('txn_date', m1).range(0, 9999)),
+    q(sb.from('debts').select('*').eq('status', 'active').order('priority').order('current_balance', { ascending: false })),
+    q(sb.from('debt_contacts').select('*').order('contact_date', { ascending: false }).limit(200)),
+    q(sb.from('v_account_balances').select('*').eq('is_active', true)),
+    sb.rpc('insights', { p_days: 28 }).then(r => r.data).catch(() => null),
+  ]);
+  const notes = { ...(cache.settings?.report || {}) };
+  const who = personView, whoName = personName();
+  const F = RPT_FREQ[rptFreq] || RPT_FREQ.fortnightly, per = `/${F.label}`;
+  const fx = monthly => monthly * F.f;            // monthly -> chosen frequency
+  const cats = new Map(cache.categories.map(c => [c.id, c]));
+  const acctSplit = id => cache.accounts.find(a => a.id === id)?.split;
+  const itemSplit = new Map(items.map(i => [i.id, i.split]));
+
+  // income: regular income items
+  const income = items.filter(i => i.direction === 'in').map(i => ({ name: i.name, m: i.amount * PER_MONTH[i.frequency] * shareFor(i.split, who), freq: i.frequency, amount: i.amount,
+    whose: splitLabel(i.split) })).filter(x => x.m > 0.004).sort((a, b) => b.m - a.m);
+  const incomeM = sum(income, x => x.m);
+  const actualInM = sum(txns.filter(t => t.amount > 0 && cats.get(t.category_id)?.kind !== 'transfer'), t => t.amount * shareFor(t.recurring_item_id ? itemSplit.get(t.recurring_item_id) : acctSplit(t.account_id), who)) / 3;
+
+  // living expenses: actual average of the last 3 full months, grouped like a hardship form (debt repayments are listed separately)
+  const exp = new Map();
+  let unsorted = 0;
+  for (const t of txns) {
+    if (t.amount >= 0) continue;
+    const c = cats.get(t.category_id);
+    if (c && (c.kind === 'transfer' || c.kind === 'income' || DEBT_CATS.test(c.name))) continue;
+    const share = shareFor(t.recurring_item_id ? itemSplit.get(t.recurring_item_id) : cache.settings?.default_split, who);
+    const amt = -t.amount * share / 3;
+    if (!c) { unsorted += amt; continue; }
+    const g = EXP_GROUPS.find(([, re]) => re.test(c.name))[0];
+    if (!exp.has(g)) exp.set(g, new Map());
+    exp.get(g).set(c.name, (exp.get(g).get(c.name) || 0) + amt);
+  }
+  if (unsorted > 0.5) { if (!exp.has('Personal & other')) exp.set('Personal & other', new Map()); exp.get('Personal & other').set('Not yet sorted', unsorted); }
+  const extraFood = Number(notes.extra_food_weekly || 0) * 52 / 12 * shareFor(cache.settings?.default_split, who);
+  const extraOther = Number(notes.extra_other_weekly || 0) * 52 / 12 * shareFor(cache.settings?.default_split, who);
+  if (extraFood > 0) { if (!exp.has('Food & groceries')) exp.set('Food & groceries', new Map()); exp.get('Food & groceries').set('Food paid another way (your estimate)', extraFood); }
+  if (extraOther > 0) { if (!exp.has('Personal & other')) exp.set('Personal & other', new Map()); exp.get('Personal & other').set('Other costs paid another way (your estimate)', extraOther); }
+  const foodFromBank = sum(txns.filter(t => t.amount < 0 && /grocer/i.test(cats.get(t.category_id)?.name || '')), t => -t.amount) / 3;
+  const groups = EXP_GROUPS.map(([g]) => [g, exp.get(g)]).filter(([, m]) => m && m.size).map(([g, m]) => ({ g, total: sum([...m.values()], v => v), lines: [...m.entries()].sort((a, b) => b[1] - a[1]) }));
+  const livingM = sum(groups, x => x.total);
+
+  // debts
+  const debts = debtsRaw.map(d => { const sh = shareFor(d.split, who);
+    const last = contacts.find(c => c.debt_id === d.id);
+    return { ...d, sh, bal: Number(d.current_balance || 0) * sh, arr: Number(d.arrears_amount || 0) * sh, repM: Number(d.min_payment || 0) * PER_MONTH[d.payment_frequency || 'monthly'] * sh, last,
+      secured: ['mortgage', 'car_loan'].includes(d.debt_type) }; }).filter(d => d.sh > 0);
+  const debtTotal = sum(debts, d => d.bal), arrTotal = sum(debts, d => d.arr), repM = sum(debts, d => d.repM);
+  const available = incomeM - livingM, after = available - repM;
+
+  // assets in the bank data
+  const isLoan = a => ['loan', 'mortgage', 'credit_card'].includes(a.account_type);
+  const cash = bal.filter(a => !isLoan(a)).map(a => ({ name: a.name, v: Number(a.calculated_balance) * shareFor(acctSplit(a.id), who) }));
+  const cashTotal = sum(cash, a => a.v);
+  const people = cache.members;
+  const kids = people.filter(m => m.relationship === 'child').length;
+  const hasMortgage = debtsRaw.some(d => d.debt_type === 'mortgage') || bal.some(a => a.account_type === 'mortgage');
+  const recentBounces = (ins?.bounces || []).filter(b => b.recent > 0);
+  const fcLow = (ins?.forecast?.days || []).reduce((a, d) => (!a || Number(d.bal) < Number(a.bal) ? d : a), null);
+  const overdueItems = items.filter(i => i.direction === 'out' && i.next_due < today() && shareFor(i.split, who) > 0);
+  const M = v => money(fx(v));
+
+  view.innerHTML = `<div class="page-head"><div><h1 class="page-title">Financial report</h1>
+      <p class="hint">Your Statement of Financial Position — the questions a lender’s hardship team, a financial counsellor or Centrelink will ask, answered from your data. ${who === 'all' ? 'Whole household.' : `Showing <b>${esc(whoName)}</b>’s share.`} As at ${esc(fmtDate(today()))}.</p></div>
+      <div class="row no-print">
+        <div class="seg" role="tablist" aria-label="Show amounts per">${Object.entries(RPT_FREQ).map(([k, v]) => `<button class="${k === rptFreq ? 'on' : ''}" data-rf="${k}">Per ${v.label}</button>`).join('')}</div>
+        <button id="rp-copy">Copy as text</button><button id="rp-print">Print / PDF</button><button id="rp-csv">CSV</button></div></div>
+
+    <section class="card rpt-quick"><h2>On the phone: quick answers</h2>
+      <dl class="qa">
+        <dt>Total income</dt><dd>${M(incomeM)} ${per}</dd>
+        <dt>Living expenses (not counting debt repayments)</dt><dd>${M(livingM)} ${per}</dd>
+        <dt>Left for debts after living costs</dt><dd class="${available < 0 ? 'neg' : ''}">${M(available)} ${per}</dd>
+        <dt>Debt repayments you’re meant to make</dt><dd>${M(repM)} ${per}</dd>
+        <dt>${after < 0 ? 'Shortfall' : 'Left over'} after all repayments</dt><dd class="${after < 0 ? 'neg' : 'pos'}">${M(after)} ${per}</dd>
+        <dt>What you could offer this creditor</dt><dd>${available > 0 ? `Up to ${M(available)} ${per} <span class="hint">across <b>all</b> your debts combined — share it fairly, essentials first</span>` : '<b>Nothing right now</b> <span class="hint">— income doesn’t cover living costs; ask for a pause</span>'}</dd>
+        <dt>Total owed</dt><dd>${money(debtTotal)} <span class="hint">· ${debts.length} debt${debts.length === 1 ? '' : 's'}${arrTotal ? ` · ${money(arrTotal)} overdue` : ''}</span></dd>
+        <dt>Money in the bank</dt><dd>${money(cashTotal)}</dd>
+        <dt>People in the household</dt><dd>${people.length} adult${people.length - kids === 1 ? '' : 's'}${kids ? ` + ${kids} child${kids > 1 ? 'ren' : ''}` : ''} · ${hasMortgage ? 'own home with a mortgage' : 'housing: see notes'}</dd>
+      </dl>
+      ${notes.reason ? `<p><b>Why:</b> ${esc(notes.reason)}</p>` : ''}${notes.asking ? `<p><b>Asking for:</b> ${esc(notes.asking)}</p>` : ''}
+      ${recentBounces.length || overdueItems.length || (fcLow && fcLow.bal < 0) ? `<div class="callout">${[
+        overdueItems.length ? `Behind on: ${overdueItems.map(i => esc(i.name)).join(', ')}.` : '',
+        recentBounces.length ? `Payments bouncing in the last 90 days: ${recentBounces.map(b => esc(b.payee.toLowerCase().replace(/\b\w/g, c => c.toUpperCase()))).join(', ')}.` : '',
+        fcLow && fcLow.bal < 0 ? `On current bills the bank balance is forecast to go to ${money(fcLow.bal)} around ${esc(fmtDate(fcLow.d))}.` : ''].filter(Boolean).join(' ')}</div>` : ''}
+      <p class="hint">Free help: National Debt Helpline <b>1800 007 007</b> (Mon–Fri). Ask any lender for their <b>hardship team</b> — they must consider your request and tell you the outcome in writing.</p>
+    </section>
+
+    <details class="card rpt" open><summary><h2>1. You and your household</h2></summary>
+      <table class="list rpt-tbl"><thead><tr><th>Name</th><th>Who</th><th class="hide-sm">Contact</th></tr></thead><tbody>
+      ${people.map(m => `<tr><td><b>${esc(memberName(m))}</b><div class="hint show-sm">${esc([m.phone, m.email].filter(Boolean).join(' · '))}</div></td><td>${esc(m.is_primary ? 'Main contact' : RELATIONSHIPS[m.relationship] || '')}</td><td class="hide-sm">${esc([m.phone, m.email].filter(Boolean).join(' · ') || '—')}</td></tr>`).join('')}
+      </tbody></table>
+      <p class="hint">Housing: ${hasMortgage ? 'own home, paying a mortgage' : 'not recorded'}. Edit people on the <button class="link" data-go="members">Household</button> page.</p>
+    </details>
+
+    <details class="card rpt" open><summary><h2>2. Income <span class="rpt-total">${M(incomeM)} ${per}</span></h2></summary>
+      ${income.length ? `<table class="list rpt-tbl"><thead><tr><th>Source</th><th class="hide-sm">Whose</th><th class="num hide-sm">Amount</th><th class="num">Per ${F.label}</th></tr></thead><tbody>
+        ${income.map(x => `<tr><td>${esc(x.name)}<div class="hint show-sm">${esc(x.whose)} · ${money(x.amount)} / ${FREQ_WORD[x.freq] || x.freq}</div></td><td class="hide-sm">${esc(x.whose)}</td><td class="num hide-sm">${money(x.amount)} <span class="hint">/ ${FREQ_WORD[x.freq] || x.freq}</span></td><td class="num">${M(x.m)}</td></tr>`).join('')}
+        </tbody><tfoot><tr class="total"><td><b>Total income</b></td><td class="hide-sm"></td><td class="hide-sm"></td><td class="num"><b>${M(incomeM)}</b></td></tr></tfoot></table>
+        <p class="hint">From your regular income list. Actually received over the last 3 months averaged ${M(actualInM)} ${per}${Math.abs(actualInM - incomeM) > incomeM * 0.15 ? ' — quite different, so check the Income page is up to date' : ''}. Have Centrelink income statements and payslips ready if asked.</p>`
+        : '<p class="empty">No regular income set up — add it on the Income page.</p>'}
+    </details>
+
+    <details class="card rpt" open><summary><h2>3. Living expenses <span class="rpt-total">${M(livingM)} ${per}</span></h2></summary>
+      ${groups.length ? `<table class="list rpt-tbl"><tbody>${groups.map(g => `<tr class="grp"><td><b>${esc(g.g)}</b></td><td class="num"><b>${M(g.total)}</b></td></tr>${g.lines.map(([n, v]) => `<tr class="sub"><td>${esc(n.replace(' (not counted)', ''))}</td><td class="num">${M(v)}</td></tr>`).join('')}`).join('')}</tbody>
+        <tfoot><tr class="total"><td><b>Total living expenses</b></td><td class="num"><b>${M(livingM)}</b></td></tr></tfoot></table>
+        ${foodFromBank < 80 * 52 / 12 && !extraFood ? `<div class="callout">Groceries from the bank are only about ${moneyRound(foodFromBank * 12 / 52)} a week for the household. If food is bought with Afterpay, cash or a card that isn’t in the app, put a realistic weekly amount in <b>Your answers</b> below — otherwise your living costs will look too low and the offer too high.</div>` : ''}
+        <p class="hint">Average actually spent over the last 3 full months (${esc(fmtDate(m0))} – ${esc(fmtDate(new Date(new Date(m1) - 864e5).toLocaleDateString('en-CA')))}). Mortgage, loans and Afterpay are in Debts below, not here.${unsorted > 0.5 ? ` ${M(unsorted)} ${per} isn’t sorted into a category yet — sorting it on <b>To sort</b> makes this more accurate.` : ''}</p>`
+        : '<p class="empty">No spending in the last 3 months yet — import your statements.</p>'}
+    </details>
+
+    <details class="card rpt" open><summary><h2>4. Debts <span class="rpt-total">${money(debtTotal)}</span></h2></summary>
+      ${debts.length ? `<div class="tablewrap"><table class="list"><thead><tr><th>Owed to</th><th class="num">Balance</th><th class="num">Overdue</th><th class="num">Repayment per ${F.label}</th><th>Hardship</th><th>Last contact</th></tr></thead><tbody>
+        ${debts.map(d => `<tr><td data-label="Owed to"><b>${esc(d.creditor)}</b>${d.secured ? ' <span class="pill">secured</span>' : ''}${d.reference_note ? `<div class="hint">${esc(d.reference_note)}</div>` : ''}</td>
+          <td class="num" data-label="Balance">${money(d.bal)}</td><td class="num" data-label="Overdue">${d.arr ? `<span class="neg">${money(d.arr)}</span>` : '—'}</td>
+          <td class="num" data-label="Repayment">${d.repM ? M(d.repM) : '—'}</td>
+          <td data-label="Hardship">${esc(label(d.hardship_status || 'none'))}${d.hardship_until ? ` <span class="hint">to ${esc(fmtDate(d.hardship_until))}</span>` : ''}</td>
+          <td data-label="Last contact">${d.last ? `${esc(fmtDate(d.last.contact_date))}${d.last.reference_number ? ` · ref ${esc(d.last.reference_number)}` : ''}<div class="hint">${esc((d.last.agreed || d.last.summary || '').slice(0, 90))}</div>` : '<span class="hint">none logged</span>'}</td></tr>`).join('')}
+        </tbody><tfoot><tr class="total"><td><b>Total</b></td><td class="num" data-label="Balance"><b>${money(debtTotal)}</b></td><td class="num" data-label="Overdue">${money(arrTotal)}</td><td class="num" data-label="Repayments"><b>${M(repM)}</b></td><td class="hide-sm"></td><td class="hide-sm"></td></tr></tfoot></table></div>
+        <p class="hint">Repayment = the contracted or minimum payment you entered. Log every call on the Debts page (Calls button) so the dates and reference numbers show here.</p>`
+        : '<p class="empty">No debts recorded.</p>'}
+    </details>
+
+    <details class="card rpt" open><summary><h2>5. Assets</h2></summary>
+      <table class="list rpt-tbl"><tbody>${cash.map(a => `<tr><td>${esc(a.name)}</td><td class="num">${money(a.v)}</td></tr>`).join('')}
+        ${['home_value', 'vehicles', 'super', 'other_assets'].map(k => `<tr><td>${esc(RPT_QUESTIONS.find(x => x[0] === k)[1])}</td><td>${notes[k] ? esc(notes[k]) : '<span class="hint">not filled in — see below</span>'}</td></tr>`).join('')}
+      </tbody></table>
+    </details>
+
+    <details class="card rpt" open><summary><h2>6. Summary</h2></summary>
+      <table class="list rpt-tbl"><tbody>
+        <tr><td>Total income</td><td class="num">${M(incomeM)}</td></tr>
+        <tr><td>less living expenses</td><td class="num">− ${M(livingM)}</td></tr>
+        <tr class="total"><td><b>Available for debt repayments</b></td><td class="num"><b class="${available < 0 ? 'neg' : ''}">${M(available)}</b></td></tr>
+        <tr><td>less current debt repayments</td><td class="num">− ${M(repM)}</td></tr>
+        <tr class="total"><td><b>${after < 0 ? 'Shortfall' : 'Surplus'}</b></td><td class="num"><b class="${after < 0 ? 'neg' : 'pos'}">${M(after)}</b></td></tr>
+      </tbody></table><p class="hint">All amounts per ${F.label}.</p>
+    </details>
+
+    <details class="card rpt" open><summary><h2>7. Your answers <span class="hint">(saved for next time)</span></h2></summary>
+      <p class="hint">The questions they always ask that aren’t in your bank data. Fill these in once; they show above and in the copy/print versions.</p>
+      <form id="rp-notes"><div class="formgrid">
+        <label>Food bought another way <span class="hint">$ per week, household — Afterpay, cash, another card</span><input type="number" step="1" min="0" name="extra_food_weekly" value="${esc(notes.extra_food_weekly ?? '')}"></label>
+        <label>Other living costs paid another way <span class="hint">$ per week, household</span><input type="number" step="1" min="0" name="extra_other_weekly" value="${esc(notes.extra_other_weekly ?? '')}"></label>
+        ${RPT_QUESTIONS.map(([k, q, ph]) => `<label class="full">${esc(q)}<textarea name="${k}" rows="2" placeholder="${esc(ph)}">${esc(notes[k] || '')}</textarea></label>`).join('')}</div>
+      <button class="primary">Save answers</button></form>
+    </details>
+
+    <details class="card rpt"><summary><h2>8. Recent calls & letters</h2></summary>
+      ${contacts.length ? `<ul class="ins-list">${contacts.slice(0, 15).map(c => { const d = debtsRaw.find(x => x.id === c.debt_id);
+        return `<li><b>${esc(fmtDate(c.contact_date))} · ${esc(d?.creditor || 'creditor')}</b><span class="ins-amt">${esc(label(c.method || ''))}</span><p class="hint">${c.spoke_to ? `Spoke to ${esc(c.spoke_to)}. ` : ''}${c.reference_number ? `Ref ${esc(c.reference_number)}. ` : ''}${esc(c.summary || '')}${c.agreed ? ` <b>Agreed:</b> ${esc(c.agreed)}` : ''}</p></li>`; }).join('')}</ul>`
+        : '<p class="empty">No calls logged yet. After each call, add it on the Debts page → Calls.</p>'}
+    </details>`;
+
+  view.querySelectorAll('[data-rf]').forEach(b => b.onclick = () => { rptFreq = b.dataset.rf; try { localStorage.setItem('rptFreq', rptFreq); } catch {} reportView(); });
+  view.querySelectorAll('[data-go]').forEach(b => b.onclick = () => show(b.dataset.go));
+  $('#rp-notes').onsubmit = async e => {
+    e.preventDefault();
+    const out = {}; for (const [k] of RPT_QUESTIONS) out[k] = e.target[k].value.trim();
+    for (const k of ['extra_food_weekly', 'extra_other_weekly']) out[k] = e.target[k].value === '' ? null : Number(e.target[k].value);
+    await busy(e.submitter, () => q(sb.from('settings').update({ report: out }).eq('owner_id', session.user.id)));
+    cache.settings.report = out; toast('Answers saved'); reportView();
+  };
+  $('#rp-print').onclick = () => { view.querySelectorAll('details.rpt').forEach(d => d.open = true); window.print(); };
+  const textReport = () => {
+    const L = [], line = (a, b = '') => L.push(b === '' ? a : `${a}: ${b}`);
+    line(`FINANCIAL POSITION — ${who === 'all' ? 'household' : whoName} — as at ${fmtDate(today())} (amounts per ${F.label})`); L.push('');
+    line('People', people.map(m => `${memberName(m)}${m.is_primary ? ' (main contact' + (m.phone ? ', ' + m.phone : '') + ')' : ' (' + (RELATIONSHIPS[m.relationship] || '') + ')'}`).join('; '));
+    line('Housing', hasMortgage ? 'own home with a mortgage' : 'see notes');
+    for (const [k, q] of RPT_QUESTIONS) if (notes[k]) line(q.replace(/\?$/, ''), notes[k]);
+    L.push('', `INCOME ${M(incomeM)}`); income.forEach(x => line(`  ${x.name}`, M(x.m)));
+    L.push('', `LIVING EXPENSES ${M(livingM)}`); groups.forEach(g => line(`  ${g.g}`, M(g.total)));
+    L.push('', `DEBTS ${money(debtTotal)} owed, repayments ${M(repM)}`); debts.forEach(d => line(`  ${d.creditor}`, `${money(d.bal)} owed${d.arr ? `, ${money(d.arr)} overdue` : ''}${d.repM ? `, repayment ${M(d.repM)}` : ''}${d.hardship_status && d.hardship_status !== 'none' ? `, hardship: ${label(d.hardship_status)}` : ''}`));
+    L.push('', `ASSETS`); cash.forEach(a => line(`  ${a.name}`, money(a.v)));
+    L.push('', 'SUMMARY'); line('  Income', M(incomeM)); line('  Living expenses', M(livingM)); line('  Available for debts', M(available)); line('  Current repayments', M(repM)); line(`  ${after < 0 ? 'Shortfall' : 'Surplus'}`, M(after));
+    return L.join('\n');
+  };
+  $('#rp-copy').onclick = async () => { try { await navigator.clipboard.writeText(textReport()); toast('Copied — paste it into an email or form'); } catch { const w = window.open('', '_blank'); if (w) { w.document.body.innerText = textReport(); } } };
+  $('#rp-csv').onclick = () => {
+    const rows = [['Statement of financial position', who === 'all' ? 'Household' : whoName, fmtDate(today()), `per ${F.label}`], [],
+      ['Income'], ...income.map(x => [x.name, x.whose, fx(x.m).toFixed(2)]), ['Total income', '', fx(incomeM).toFixed(2)], [],
+      ['Living expenses'], ...groups.flatMap(g => [[g.g, '', fx(g.total).toFixed(2)], ...g.lines.map(([n, v]) => ['', n, fx(v).toFixed(2)])]), ['Total living expenses', '', fx(livingM).toFixed(2)], [],
+      ['Debts', 'Balance', 'Overdue', 'Repayment', 'Hardship', 'Last contact', 'Reference'], ...debts.map(d => [d.creditor, d.bal.toFixed(2), d.arr.toFixed(2), fx(d.repM).toFixed(2), d.hardship_status || '', d.last?.contact_date || '', d.last?.reference_number || '']), [],
+      ['Assets'], ...cash.map(a => [a.name, a.v.toFixed(2)]), ...['home_value', 'vehicles', 'super', 'other_assets'].map(k => [RPT_QUESTIONS.find(x => x[0] === k)[1], notes[k] || '']), [],
+      ['Available for debts', fx(available).toFixed(2)], ['Current repayments', fx(repM).toFixed(2)], [after < 0 ? 'Shortfall' : 'Surplus', fx(after).toFixed(2)], [],
+      ...RPT_QUESTIONS.filter(([k]) => notes[k]).map(([k, q]) => [q, notes[k]])];
+    const csv = rows.map(r => r.map(v => `"${String(v ?? '').replace(/"/g, '""')}"`).join(',')).join('\r\n');
+    const a = document.createElement('a'); a.href = URL.createObjectURL(new Blob([csv], { type: 'text/csv' })); a.download = `financial-position-${today()}.csv`; a.click(); URL.revokeObjectURL(a.href);
+  };
+}
+
 // ---------- HOUSEHOLD MEMBERS (people inside this login) ----------
 TABLES.household_members = { title: 'People in the household', addTitle: 'person', order: ['sort_order'],
   fields: [
@@ -2038,7 +2259,7 @@ async function setup() {
 }
 
 // ---------- navigation & auth ----------
-const VIEWS = { dashboard, insights: insightsView, members: membersView, budget, bills, income, debts, transactions, sort: sortView, import: importView, shared, pay: payView, tax: taxView, setup };
+const VIEWS = { dashboard, insights: insightsView, members: membersView, report: reportView, budget, bills, income, debts, transactions, sort: sortView, import: importView, shared, pay: payView, tax: taxView, setup };
 async function updateSortBadge() {
   const { count } = await sb.from('transactions').select('id', { count: 'exact', head: true }).is('category_id', null);
   for (const id of ['#sort-badge', '#sort-badge-m']) { const b = $(id); if (b) { b.textContent = count || ''; b.classList.toggle('hidden', !count); } }

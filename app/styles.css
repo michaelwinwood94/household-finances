@@ -399,3 +399,29 @@ label.button:focus-within { outline: 3px solid var(--brand-soft); outline-offset
 .seg-list { display: grid; gap: .35rem; margin: .4rem 0 .8rem; }
 .seg-list label { display: block; font-weight: 400; margin: 0; padding-left: 1.7rem; text-indent: -1.7rem; line-height: 1.45; }
 .seg-list input { width: auto; margin: 0 .5rem 0 0; vertical-align: -2px; }
+/* financial report */
+.rpt-quick { border: 2px solid var(--brand); }
+.qa { display: grid; grid-template-columns: minmax(12rem, 22rem) 1fr; gap: .45rem 1.2rem; margin: .4rem 0 .8rem; }
+.qa dt { color: var(--ink-2); } .qa dd { margin: 0; font-weight: 700; font-variant-numeric: tabular-nums; }
+.qa .neg, .neg { color: var(--bad); } .qa .pos { color: var(--good); }
+details.rpt > summary { cursor: pointer; list-style: none; }
+details.rpt > summary::-webkit-details-marker { display: none; }
+details.rpt > summary h2 { display: flex; align-items: baseline; gap: .4rem; margin: 0; }
+details.rpt > summary h2::before { content: '▸'; color: var(--muted); margin-right: .2rem; transition: transform .15s; }
+details.rpt[open] > summary h2::before { transform: rotate(90deg); }
+details.rpt[open] > summary { margin-bottom: .6rem; }
+.rpt-total { font-variant-numeric: tabular-nums; margin-left: auto; }
+tr.grp td { padding-top: .7rem; } tr.sub td:first-child { padding-left: 1.4rem; color: var(--ink-2); }
+@media (max-width: 760px) { .qa { grid-template-columns: 1fr; gap: .1rem; } .qa dd { margin-bottom: .55rem; font-size: 1.1rem; } }
+@media print { .no-print, #rp-notes button, #bottomnav, #whoswitch, #tools { display: none !important; } details.rpt > summary h2::before { content: none; } }
+.show-sm { display: none; }
+@media (max-width: 760px) {
+  .hide-sm { display: none !important; } .show-sm { display: block; }
+  table.list.rpt-tbl { display: table; width: 100%; } table.list.rpt-tbl thead { display: table-header-group; }
+  table.list.rpt-tbl tbody { display: table-row-group; } table.list.rpt-tbl tfoot { display: table-footer-group; }
+  table.list.rpt-tbl tr, table.list.rpt-tbl tbody tr, table.list.rpt-tbl tfoot tr { display: table-row; border: 0; padding: 0; margin: 0; background: none; border-radius: 0; }
+  table.list.rpt-tbl td, table.list.rpt-tbl th, table.list.rpt-tbl tfoot td { display: table-cell; width: auto; padding: .4rem .3rem; border-bottom: 1px solid var(--line); }
+  table.list.rpt-tbl td.num, table.list.rpt-tbl th.num { text-align: right !important; white-space: nowrap; }
+  table.list.rpt-tbl td::before { content: none !important; }
+  table.list tfoot tr.total td:empty { display: none; }
+}
