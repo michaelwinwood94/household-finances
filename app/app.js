@@ -1,10 +1,10 @@
 import { createClient } from 'https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2/+esm';
-import { SUPABASE_URL, SUPABASE_PUBLISHABLE_KEY } from './config.js?v=202611230925';
-import { parseBankCsv, parseWestpacActivity, splitAccounts, linesFromItems } from './csv.js?v=202611230925';
-import { readPayslip, toLines } from './payslip.js?v=202611230925';
-import { readBill } from './bill.js?v=202611230925';
-import { toast, softDelete, busy, friendlyError, watchOnline, info, wireInfoTips, skeleton, wireInstall, applyPrefs, settingsMenu, prefs, setPref, store } from './ui.js?v=202611230925';
-import { columnChart, hbarChart, lineChart, SERIES, moneyRound, moneyCompact } from './charts.js?v=202611230925';
+import { SUPABASE_URL, SUPABASE_PUBLISHABLE_KEY } from './config.js?v=202611230940';
+import { parseBankCsv, parseWestpacActivity, splitAccounts, linesFromItems } from './csv.js?v=202611230940';
+import { readPayslip, toLines } from './payslip.js?v=202611230940';
+import { readBill } from './bill.js?v=202611230940';
+import { toast, softDelete, busy, friendlyError, watchOnline, info, wireInfoTips, skeleton, wireInstall, applyPrefs, settingsMenu, prefs, setPref, store } from './ui.js?v=202611230940';
+import { columnChart, hbarChart, lineChart, SERIES, moneyRound, moneyCompact } from './charts.js?v=202611230940';
 
 const sb = createClient(SUPABASE_URL, SUPABASE_PUBLISHABLE_KEY);
 const $ = (s, el = document) => el.querySelector(s);
@@ -1537,7 +1537,7 @@ async function taxView() {
           <select id="tax-fy" aria-label="Financial year" style="width:auto;margin:0">${fys.map(f => `<option ${f === taxFy ? 'selected' : ''} value="${f}">FY ${f.slice(0, 4)}–${f.slice(5)}${f === fyOf(today()) ? ' (so far)' : ''}</option>`).join('')}</select>
         </div></div>
 
-      ${floor == null ? `<div class="alert warning"><span class="alert-icon">•</span><div><b>Set the share of the home the boarders use</b><div class="hint">Fill in "Home used by boarders" below — claimable costs can't be worked out without it.</div></div><span></span></div><br>` : ''}
+      ${floor == null ? `<div class="alert warning"><span class="alert-icon">•</span><div><b>Set the share of the home the boarders use</b><div class="hint">Fill in "Home used by boarders" in <b>Settings</b> further down — claimable costs can't be worked out without it.</div></div><span></span></div><br>` : ''}
 
       <div class="tiles">
         <div class="tile"><div class="tile-label">Board received — ${esc(who)}</div><div class="tile-value">${moneyRound(incomeMine)}</div><div class="tile-sub">${Math.round(share * 100)}% of ${moneyRound(boardTotal)} · ${boardTx.length} payment${boardTx.length === 1 ? '' : 's'}</div></div>
@@ -1545,8 +1545,42 @@ async function taxView() {
         <div class="tile ${net < 0 ? 'good' : ''}"><div class="tile-label">Net rental ${net < 0 ? 'loss' : 'income'} ${info('Board received minus claimable costs. This is the estimate that goes in the rental section of the tax return.')}</div><div class="tile-value">${moneyRound(net)}</div><div class="tile-sub">what goes on the return (estimate)</div></div>
       </div>
 
+      <div class="row no-print" style="margin-bottom:1rem"><button id="t-csv">Download for tax agent (CSV)</button><button id="t-print">Print</button></div>
+
+      <section class="card"><div class="sec-head"><div><h2>Claim summary — ${esc(who)}</h2><p class="hint">FY ${taxFy.slice(0, 4)}–${taxFy.slice(5)} · ${Math.round(share * 100)}% share · ${floor == null ? 'floor-area % not set yet' : `${Math.round(factor * 1000) / 10}% of each counted cost`}</p></div></div>
+        <div class="tablewrap"><table class="list rpt-tbl"><tbody>
+          <tr class="grp"><td><b>Board received</b></td><td class="num"><b>${money(incomeMine)}</b></td></tr>
+          ${candidates.filter(x => incl(x.id)).map(x => `<tr class="sub"><td>${esc(x.c.name.replace(' (not counted)', ''))}</td><td class="num">${money(x.total * factor * share)}</td></tr>`).join('')}
+          ${extras.filter(e => e.kind === 'expense').map(e => `<tr class="sub"><td>${esc(e.description)} <span class="hint">(added)</span></td><td class="num">${money(e.amount * (e.apportion ? factor : 1) * share)}</td></tr>`).join('')}
+          <tr class="grp"><td><b>Claimable costs</b></td><td class="num"><b>− ${money(claimMine)}</b></td></tr>
+          <tr class="total"><td><b>Net rental ${net < 0 ? 'loss' : 'income'}</b></td><td class="num"><b>${money(net)}</b></td></tr>
+        </tbody></table></div>
+        <p class="hint">Change what counts in <b>Settings</b> further down.</p>
+      </section>
+
       <div class="grid2">
-        <section class="card"><div class="sec-head"><div><h2>Home used by boarders</h2><p class="hint">ATO floor-area method: (boarders' own rooms + half the shared areas) ÷ whole home</p></div></div>
+        <section class="card"><div class="sec-head"><div><h2>Board received by month</h2><p class="hint">Household · ${esc(who)}'s share is ${Math.round(share * 100)}%</p></div></div>
+          <div id="t-months"></div></section>
+
+          <section class="card"><div class="sec-head"><div><h2>Centrelink check</h2><p class="hint">How much of the board Centrelink counts (lodging only, no meals)</p></div></div>
+        <div id="t-cl"></div></section>
+      </div>
+
+      <h2 class="section-divider" id="t-settings">Settings <span class="hint">— adjust how it's worked out</span></h2>
+
+      <section class="card"><div class="sec-head"><div><h2>Which house costs count</h2>
+          <p class="hint">Tick the costs that are for the home. Only home-related costs count — not car insurance, food for yourselves, or personal items. Interest counts only on loans used to buy the home.</p></div></div>
+        <div class="tablewrap"><table class="list"><thead><tr><th>Count?</th><th>Cost</th><th class="num">Paid this year</th><th class="num">Claimable (household)</th><th class="num">${esc(who)}</th></tr></thead><tbody>
+          ${candidates.map(x => `<tr><td><input type="checkbox" class="t-cat" data-id="${x.id}" ${incl(x.id) ? 'checked' : ''} aria-label="Count ${esc(x.c.name)}"></td>
+            <td>${esc(x.c.name.replace(' (not counted)', ''))}${interestCat && x.id === interestCat.id ? `<div class="hint">${loans.map(a => `<label class="mcheck" style="display:inline-block;margin-right:.8rem"><input type="checkbox" class="t-loan" data-id="${a.id}" ${st.included_loan_accounts.includes(a.id) ? 'checked' : ''}> ${esc(a.name)}</label>`).join('')}</div>` : ''}
+              ${/insurance/i.test(x.c.name) ? '<div class="hint">only home &amp; contents / building insurance counts</div>' : ''}</td>
+            <td class="num">${money(x.total)}</td><td class="num">${incl(x.id) ? money(x.total * factor) : '<span class="hint">—</span>'}</td><td class="num">${incl(x.id) ? money(x.total * factor * share) : '<span class="hint">—</span>'}</td></tr>`).join('')}
+        </tbody><tfoot><tr class="total"><td></td><td><b>Total from bank data</b></td><td></td><td class="num"><b>${money(catClaim)}</b></td><td class="num"><b>${money(catClaim * share)}</b></td></tr></tfoot></table></div>
+      </section>
+
+      <section class="card" id="t-extras"></section>
+
+      <section class="card"><div class="sec-head"><div><h2>Home used by boarders</h2><p class="hint">ATO floor-area method: (boarders' own rooms + half the shared areas) ÷ whole home</p></div></div>
           ${(st.rooms || []).length ? (() => { const rt = roomTotals(); return `<div class="tablewrap"><table class="list rooms"><thead><tr><th>Room</th><th class="num">m²</th><th>Used by</th><th></th></tr></thead><tbody>
             ${st.rooms.map((r, i) => `<tr class="use-${r.use}"><td><input class="r-name" data-i="${i}" value="${esc(r.name)}" aria-label="Room name">${r.note ? `<div class="hint">${esc(r.note)}</div>` : ''}</td>
               <td class="num"><input class="r-m2" data-i="${i}" type="number" step="0.01" min="0" value="${r.m2}" aria-label="Area m²" style="width:6.5rem;text-align:right"></td>
@@ -1571,26 +1605,6 @@ async function taxView() {
           <div class="row"><button class="primary" id="t-save">Save</button><span class="hint" id="t-saved"></span></div>
         </section>
 
-        <section class="card"><div class="sec-head"><div><h2>Board received by month</h2><p class="hint">Household · ${esc(who)}'s share is ${Math.round(share * 100)}%</p></div></div>
-          <div id="t-months"></div></section>
-      </div>
-
-      <section class="card"><div class="sec-head"><div><h2>House costs this year</h2>
-          <p class="hint">Tick the costs that are for the home. Only home-related costs count — not car insurance, food for yourselves, or personal items. Interest counts only on loans used to buy the home.</p></div></div>
-        <div class="tablewrap"><table class="list"><thead><tr><th>Count?</th><th>Cost</th><th class="num">Paid this year</th><th class="num">Claimable (household)</th><th class="num">${esc(who)}</th></tr></thead><tbody>
-          ${candidates.map(x => `<tr><td><input type="checkbox" class="t-cat" data-id="${x.id}" ${incl(x.id) ? 'checked' : ''} aria-label="Count ${esc(x.c.name)}"></td>
-            <td>${esc(x.c.name.replace(' (not counted)', ''))}${interestCat && x.id === interestCat.id ? `<div class="hint">${loans.map(a => `<label class="mcheck" style="display:inline-block;margin-right:.8rem"><input type="checkbox" class="t-loan" data-id="${a.id}" ${st.included_loan_accounts.includes(a.id) ? 'checked' : ''}> ${esc(a.name)}</label>`).join('')}</div>` : ''}
-              ${/insurance/i.test(x.c.name) ? '<div class="hint">only home &amp; contents / building insurance counts</div>' : ''}</td>
-            <td class="num">${money(x.total)}</td><td class="num">${incl(x.id) ? money(x.total * factor) : '<span class="hint">—</span>'}</td><td class="num">${incl(x.id) ? money(x.total * factor * share) : '<span class="hint">—</span>'}</td></tr>`).join('')}
-        </tbody><tfoot><tr class="total"><td></td><td><b>Total from bank data</b></td><td></td><td class="num"><b>${money(catClaim)}</b></td><td class="num"><b>${money(catClaim * share)}</b></td></tr></tfoot></table></div>
-      </section>
-
-      <section class="card" id="t-extras"></section>
-
-      <section class="card"><div class="sec-head"><div><h2>Centrelink check</h2><p class="hint">How much of the board Centrelink counts (lodging only, no meals)</p></div></div>
-        <div id="t-cl"></div></section>
-
-      <div class="row"><button id="t-csv">Download for tax agent (CSV)</button><button id="t-print">Print</button></div>
       <p class="hint">This is a guide, not tax advice. Keep receipts and bank statements. Renting part of your main residence can reduce the capital gains tax exemption when you sell.</p>`;
 
     // board by month chart

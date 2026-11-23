@@ -425,3 +425,6 @@ tr.grp td { padding-top: .7rem; } tr.sub td:first-child { padding-left: 1.4rem; 
   table.list.rpt-tbl td::before { content: none !important; }
   table.list tfoot tr.total td:empty { display: none; }
 }
+.section-divider { margin: 2rem 0 .8rem; padding-top: 1.2rem; border-top: 2px solid var(--line); font-size: 1.25rem; }
+.section-divider .hint { font-weight: 400; font-size: .95rem; }
+@media print { .section-divider, .section-divider ~ section { display: none !important; } }
