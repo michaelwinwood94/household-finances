@@ -330,3 +330,75 @@ export function parseWestpacOcr(pages) {
   const hbal = hb ? money(hb[1]) : null;
   return { format: 'westpac-pdf-scan', account: { name, last4, balance: hbal }, rows, skipped, notes };
 }
+
+// CommBank NetBank "Account overview" page saved as a picture-only PDF, read by text recognition.
+// Layout: a date heading, then for each transaction an amount (+/-), the description and "Balance $x".
+export function parseCommbankOcr(pages) {
+  const lines = pages.flat().map(t => String(t).replace(/\s+/g, ' ').trim()).filter(Boolean);
+  const head = lines.join('\n');
+  if (!/NetBank/i.test(head) || !/Acc(?:ount)? Number/i.test(head) || !/Balance/.test(head))
+    return { format: 'unknown', rows: [], skipped: [], error: 'This scanned PDF doesn’t look like a CommBank NetBank account page.' };
+  const acc = head.match(/Acc(?:ount)? Number\s+([\d ]{6,})/);
+  const last4 = acc ? acc[1].replace(/\D/g, '').slice(-4) : '';
+  const bsbIdx = lines.findIndex(t => /\bBSB\b/.test(t));
+  const name = bsbIdx > 0 ? lines[bsbIdx - 1].replace(/[\s\-~_|>v^©®]+$/i, '').replace(/^[^A-Za-z]+/, '').trim() : '';
+  const bl = lines.findIndex(t => /^Available\b.*Balance/.test(t));
+  const hb = bl >= 0 ? (lines[bl + 1] || '').match(/\$[\d,]+\.\d{2}/g) : null;
+  const money = s => Number(s.replace(/[^\d.]/g, ''));
+  const r2 = x => Math.round(x * 100) / 100;
+  const DATE = /^(?:Mon|Tue|Wed|Thu|Fri|Sat|Sun)\w* (\d{1,2}) ([A-Z][a-z]{2}) (\d{4})\b/;
+  const AMT = /([+\-–—“”"‘’'~])\s?\$\s?([\d,]+\.\d{2})/;   // a minus is sometimes read as a quote mark
+  const SKIP = /netbank|^\d{1,2}\/\d{1,2}\/\d{2},|https?:|^\d+\s?\/\s?\d+$|Load more|^Transactions\b|^Overview\b|^Available\b|^Pending\b/i;
+  const clean = d => {
+    let t = d.replace(/\$\s*[\d.,]*$/, '').replace(/^[^A-Za-z0-9(']+/, '').replace(/\s+/g, ' ').trim();
+    const m = t.match(/^([A-Za-z]{1,3}[)\]]?)\s+(?=[A-Z0-9])/);      // a leftover icon smudge in front of the wording
+    if (m && !/^(to|from|pay|the|eft|atm|mr|mrs|ms|dr|bp)$/i.test(m[1])) t = t.slice(m[0].length);
+    return t.replace(/[\s|_.]+$/, '');
+  };
+  const raw = []; let date = null, cur = null;
+  const finish = (bal) => { if (cur && date) { cur.balance = bal; cur.description = clean(cur.parts.join(' ')) || '(no description)'; raw.push(cur); } cur = null; };
+  for (const t of lines) {
+    if (SKIP.test(t)) continue;
+    const dm = t.match(DATE);
+    if (dm && MONTHS[dm[2].toLowerCase()]) { cur = null; date = iso(+dm[3], MONTHS[dm[2].toLowerCase()], +dm[1]); continue; }
+    const bm = t.match(/^(.*?)\bBalance\s*(-?)\s?\$\s?([\d,]+\.\d{2})/);
+    if (bm) { if (cur && bm[1].trim()) cur.parts.push(bm[1].trim()); finish((bm[2] ? -1 : 1) * money(bm[3])); continue; }
+    if (!date) continue;
+    const am = t.match(AMT);
+    if (am) {
+      if (cur && cur.amount != null) cur = null;   // a previous transaction never got its balance
+      cur = cur || { date, parts: [], amount: null };
+      cur.date = date; cur.amount = (am[1] === '+' ? 1 : -1) * money(am[2]);
+      const rest = (t.slice(0, am.index) + ' ' + t.slice(am.index + am[0].length)).replace(/^[\s.:,‘'’|]+/, '').trim();
+      if (rest) cur.parts.push(rest);
+    } else {
+      cur = cur || { date, parts: [], amount: null };
+      cur.parts.push(t);
+    }
+  }
+  // A read amount is kept. Only a missing amount is worked out from the running balance; where the balances
+  // don't add up, a row has probably been lost between two pages, so the spot is reported instead of guessed.
+  let hidden = 0; const gaps = [];
+  raw.forEach((r, i) => {
+    const next = raw[i + 1];
+    if (r.balance != null && next && next.balance != null) {
+      const d = r2(r.balance - next.balance);
+      if (r.amount == null) { r.amount = d; hidden++; }
+      else if (Math.abs(r.amount - d) > 0.005) gaps.push(r.date);
+    }
+  });
+  const rows = [], skipped = [];
+  raw.forEach((r, i) => { if (r.amount == null) skipped.push({ line: i + 1, reason: 'amount not found', raw: r.description }); else rows.push({ date: r.date, description: r.description, amount: r2(r.amount), balance: r.balance }); });
+  const notes = [];
+  if (/Load more transactions/i.test(head)) notes.push('CommBank loads transactions in batches — click “Load more transactions” until you reach the date you need, then save the page to PDF.');
+  if (hidden) notes.push(`${hidden} unreadable amount${hidden > 1 ? 's' : ''} worked out from the running balance.`);
+  if (gaps.length) notes.push(`The running balance doesn’t add up near ${[...new Set(gaps)].map(d => d.split('-').reverse().join('/')).slice(0, 6).join(', ')} — check those dates after importing (a row may be missing or misread).`);
+  return { format: 'commbank-pdf-scan', account: { name, last4, balance: hb ? money(hb[hb.length - 1]) : null }, rows, skipped, notes };
+}
+
+// Which bank is a picture-only PDF from? Reads it with the matching layout.
+export function parseScannedPdf(pages) {
+  const head = pages.flat().join('\n');
+  if (/NetBank/i.test(head)) return parseCommbankOcr(pages);
+  return parseWestpacOcr(pages);
+}

@@ -1,11 +1,11 @@
 import { createClient } from 'https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2/+esm';
-import { SUPABASE_URL, SUPABASE_PUBLISHABLE_KEY } from './config.js?v=202611240235';
-import { parseBankCsv, parseWestpacActivity, parseWestpacOcr, parseLatitudeStatement, isLatitudeStatement, splitAccounts, linesFromItems } from './csv.js?v=202611240235';
-import { readPayslip, toLines } from './payslip.js?v=202611240235';
-import { readBill } from './bill.js?v=202611240235';
-import { parseAfterpay, parseDeferit, mergeRows, isKnown, shopKey, bestShopKey } from './bnpl.js?v=202611240235';
-import { toast, softDelete, busy, friendlyError, watchOnline, info, wireInfoTips, skeleton, wireInstall, applyPrefs, settingsMenu, prefs, setPref, store } from './ui.js?v=202611240235';
-import { columnChart, hbarChart, lineChart, SERIES, moneyRound, moneyCompact } from './charts.js?v=202611240235';
+import { SUPABASE_URL, SUPABASE_PUBLISHABLE_KEY } from './config.js?v=202611240300';
+import { parseBankCsv, parseWestpacActivity, parseScannedPdf, parseLatitudeStatement, isLatitudeStatement, splitAccounts, linesFromItems } from './csv.js?v=202611240300';
+import { readPayslip, toLines } from './payslip.js?v=202611240300';
+import { readBill } from './bill.js?v=202611240300';
+import { parseAfterpay, parseDeferit, mergeRows, isKnown, shopKey, bestShopKey } from './bnpl.js?v=202611240300';
+import { toast, softDelete, busy, friendlyError, watchOnline, info, wireInfoTips, skeleton, wireInstall, applyPrefs, settingsMenu, prefs, setPref, store } from './ui.js?v=202611240300';
+import { columnChart, hbarChart, lineChart, SERIES, moneyRound, moneyCompact } from './charts.js?v=202611240300';
 
 const sb = createClient(SUPABASE_URL, SUPABASE_PUBLISHABLE_KEY);
 const $ = (s, el = document) => el.querySelector(s);
@@ -996,7 +996,7 @@ async function readPdfItems(file) {
 
 function guessInstitution(parsed, filename) {
   if (parsed.format.startsWith('westpac')) return 'Westpac';
-  if (parsed.format === 'commbank' || /commbank|cba/i.test(filename)) return 'CommBank';
+  if (parsed.format.startsWith('commbank') || /commbank|cba/i.test(filename)) return 'CommBank';
   return 'Other';
 }
 function guessType(name) {
@@ -1122,7 +1122,7 @@ async function importView() {
               if (isLatitudeStatement(pg)) return parseLatitudeStatement(pg);
               if (pg.flat().length < 15) {   // a picture-only PDF (e.g. a printed Westpac page): read it by text recognition
                 pv.innerHTML = `<p>Scanned PDF — reading ${esc(file.name)}…</p>`;
-                return parseWestpacOcr(await ocrPdfPages(file, (pgNo, n, pct) => { pv.innerHTML = `<p>Scanned PDF — reading ${esc(file.name)}: page ${pgNo} of ${n}${pct != null ? ' · ' + pct + '%' : ''}…</p>`; }));
+                return parseScannedPdf(await ocrPdfPages(file, (pgNo, n, pct) => { pv.innerHTML = `<p>Scanned PDF — reading ${esc(file.name)}: page ${pgNo} of ${n}${pct != null ? ' · ' + pct + '%' : ''}…</p>`; }));
               }
               return parseWestpacActivity(pg);
             })()
@@ -1136,7 +1136,7 @@ async function importView() {
       const sameBankNoNumber = cache.accounts.filter(a => a.institution === inst && !a.nickname_last4 && !['loan', 'mortgage'].includes(a.account_type));
       const match = cache.accounts.find(a => acc.last4 && a.nickname_last4 === acc.last4)
         || cache.accounts.find(a => acc.name && a.name.toLowerCase() === acc.name.toLowerCase() && !a.nickname_last4)
-        || (!acc.last4 && !acc.name && sameBankNoNumber.length === 1 ? sameBankNoNumber[0] : null);
+        || ((((!acc.last4 && !acc.name) || parsed.format === 'commbank-pdf-scan') && sameBankNoNumber.length === 1) ? sameBankNoNumber[0] : null);
       jobs.push({ file, parsed, accountId: match ? match.id : 'new',
         newName: acc.name ? `${acc.name}${acc.last4 ? ' …' + acc.last4 : ''}` : `${guessInstitution(parsed, file.name)} account${acc.last4 ? ' …' + acc.last4 : ''}` });
     }
@@ -1185,22 +1185,31 @@ async function importView() {
         } else {
           // file reaches further back than this account's start date: move the start back
           const acct = cache.accounts.find(a => a.id === accountId);
+          if (acct && !acct.nickname_last4 && p.account?.last4 && !['loan', 'mortgage'].includes(acct.account_type)) await q(sb.from('accounts').update({ nickname_last4: p.account.last4 }).eq('id', accountId));
           const open = openingFor(p);
           const hasBal = p.rows.some(r => r.balance != null);
           if (acct && hasBal && open.date < acct.opening_date) {
             await q(sb.from('accounts').update({ opening_balance: open.balance, opening_date: open.date }).eq('id', accountId));
           }
         }
-        if (p.format === 'westpac-pdf-scan') {
-          // Text recognition can misread a letter. Where the same date and amount are already on file, keep the stored
-          // wording so the row is recognised as a duplicate instead of being added twice.
+        if (/-pdf-scan$/.test(p.format)) {
+          // Text recognition can misread a letter, and NetBank dates some credits a day earlier than the CSV. Where the same
+          // amount is already on file on that date (or within 3 days), keep the stored date and wording so the row is
+          // recognised as a duplicate instead of being added twice.
           const dts = p.rows.map(r => r.date).sort();
+          const lo = new Date(new Date(dts[0]) - 3 * 864e5).toLocaleDateString('en-CA'), hi = new Date(+new Date(dts.at(-1)) + 3 * 864e5).toLocaleDateString('en-CA');
           const have = []; for (let from = 0; ; from += 1000) {
-            const chunk = await q(sb.from('transactions').select('txn_date, amount, description').eq('account_id', accountId).gte('txn_date', dts[0]).lte('txn_date', dts.at(-1)).order('id').range(from, from + 999));
+            const chunk = await q(sb.from('transactions').select('txn_date, amount, description').eq('account_id', accountId).gte('txn_date', lo).lte('txn_date', hi).order('id').range(from, from + 999));
             have.push(...chunk); if (chunk.length < 1000) break;
           }
-          const pool = new Map(); for (const t of have) { const k = `${t.txn_date}|${Number(t.amount).toFixed(2)}`; if (!pool.has(k)) pool.set(k, []); pool.get(k).push(t.description); }
-          p.rows.forEach(r => { const list = pool.get(`${r.date}|${r.amount.toFixed(2)}`); if (list?.length) r.description = list.shift(); });
+          const pool = have.map(t => ({ ...t, amount: Number(t.amount), used: false, day: Math.round(new Date(t.txn_date) / 864e5) }));
+          const day = d => Math.round(new Date(d) / 864e5);
+          for (const pass of [0, 1, 2, 3]) for (const r of p.rows) {
+            if (r.snapped) continue;
+            const hit = pool.find(t => !t.used && Math.abs(t.amount - r.amount) < 0.005 && Math.abs(t.day - day(r.date)) === pass);
+            if (hit) { hit.used = true; r.snapped = true; r.date = hit.txn_date; r.description = hit.description; }
+          }
+          p.rows.forEach(r => { delete r.snapped; });
         }
         // Number identical same-day transactions across the whole file, so two genuine
         // $25 payments on the same day are never mistaken for a duplicate when sent in chunks.
