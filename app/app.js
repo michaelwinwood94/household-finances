@@ -1,11 +1,11 @@
 import { createClient } from 'https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2/+esm';
-import { SUPABASE_URL, SUPABASE_PUBLISHABLE_KEY } from './config.js?v=202611240110';
-import { parseBankCsv, parseWestpacActivity, parseLatitudeStatement, isLatitudeStatement, splitAccounts, linesFromItems } from './csv.js?v=202611240110';
-import { readPayslip, toLines } from './payslip.js?v=202611240110';
-import { readBill } from './bill.js?v=202611240110';
-import { parseAfterpay, parseDeferit, mergeRows, isKnown, shopKey, bestShopKey } from './bnpl.js?v=202611240110';
-import { toast, softDelete, busy, friendlyError, watchOnline, info, wireInfoTips, skeleton, wireInstall, applyPrefs, settingsMenu, prefs, setPref, store } from './ui.js?v=202611240110';
-import { columnChart, hbarChart, lineChart, SERIES, moneyRound, moneyCompact } from './charts.js?v=202611240110';
+import { SUPABASE_URL, SUPABASE_PUBLISHABLE_KEY } from './config.js?v=202611240145';
+import { parseBankCsv, parseWestpacActivity, parseLatitudeStatement, isLatitudeStatement, splitAccounts, linesFromItems } from './csv.js?v=202611240145';
+import { readPayslip, toLines } from './payslip.js?v=202611240145';
+import { readBill } from './bill.js?v=202611240145';
+import { parseAfterpay, parseDeferit, mergeRows, isKnown, shopKey, bestShopKey } from './bnpl.js?v=202611240145';
+import { toast, softDelete, busy, friendlyError, watchOnline, info, wireInfoTips, skeleton, wireInstall, applyPrefs, settingsMenu, prefs, setPref, store } from './ui.js?v=202611240145';
+import { columnChart, hbarChart, lineChart, SERIES, moneyRound, moneyCompact } from './charts.js?v=202611240145';
 
 const sb = createClient(SUPABASE_URL, SUPABASE_PUBLISHABLE_KEY);
 const $ = (s, el = document) => el.querySelector(s);
@@ -2250,13 +2250,14 @@ async function reportView() {
   const N = rptRange, ymd = d => d.toLocaleDateString('en-CA');
   const now = new Date(), m0 = ymd(new Date(now.getFullYear(), now.getMonth() - N, 1)), m1 = ymd(new Date(now.getFullYear(), now.getMonth(), 1)), mEnd = ymd(new Date(now.getFullYear(), now.getMonth() + 1, 1));
   const rangeTxt = `${fmtDate(m0)} – ${fmtDate(ymd(new Date(new Date(m1) - 864e5)))}`;
-  const [items, allTxns, debtsRaw, contacts, bal, ins] = await Promise.all([
+  const [items, allTxns, debtsRaw, contacts, bal, ins, inst] = await Promise.all([
     q(sb.from('recurring_items').select('*').eq('is_active', true)),
     q(sb.from('transactions').select('amount, category_id, account_id, txn_date, recurring_item_id, description').gte('txn_date', m0).lt('txn_date', mEnd).range(0, 9999)),
     q(sb.from('debts').select('*').eq('status', 'active').order('priority').order('current_balance', { ascending: false })),
     q(sb.from('debt_contacts').select('*').order('contact_date', { ascending: false }).limit(200)),
     q(sb.from('v_account_balances').select('*').eq('is_active', true)),
     sb.rpc('insights', { p_days: 28 }).then(r => r.data).catch(() => null),
+    q(sb.from('debt_instalments').select('debt_id, amount, due_date, category_id').eq('is_paid', false).range(0, 4999)),
   ]);
   const txns = allTxns.filter(t => t.txn_date < m1), curTxns = allTxns.filter(t => t.txn_date >= m1);
   const notes = { ...(cache.settings?.report || {}) };
@@ -2288,6 +2289,24 @@ async function reportView() {
     const g = EXP_GROUPS.find(([, re]) => re.test(c.name))[0];
     if (!exp.has(g)) exp.set(g, new Map());
     exp.get(g).set(c.name, (exp.get(g).get(c.name) || 0) + amt);
+  }
+  // Afterpay/Deferit shopping still to pay: counted by what it was spent on, at the rate it is being paid off.
+  // Paid (matched) instalments are already in the bank rows above, and the amount is taken off the BNPL repayment line, so nothing is counted twice.
+  let instM = 0;
+  if (inst.length) {
+    const lastDue = inst.reduce((m, i) => i.due_date > m ? i.due_date : m, '');
+    const months = Math.max(1, (new Date(lastDue) - new Date(today())) / 864e5 / 30.44);
+    const provOf = new Map(debtsRaw.map(d => [d.id, (d.creditor || '').split(' ')[0].toLowerCase()]));
+    for (const i of inst) {
+      const c = cats.get(i.category_id);
+      if (!c || c.kind !== 'expense' || DEBT_CATS.test(c.name)) continue;
+      const amt = Number(i.amount) * shareFor(cache.settings?.default_split, who) / months;
+      const g = EXP_GROUPS.find(([, re]) => re.test(c.name))[0];
+      if (!exp.has(g)) exp.set(g, new Map());
+      exp.get(g).set(c.name, (exp.get(g).get(c.name) || 0) + amt);
+      const pv = provOf.get(i.debt_id); if (pv) bnplPaidM[pv] = (bnplPaidM[pv] || 0) + amt;
+      instM += amt;
+    }
   }
   if (unsorted > 0.5) { if (!exp.has('Personal & other')) exp.set('Personal & other', new Map()); exp.get('Personal & other').set('Not yet sorted', unsorted); }
   const extraFood = Number(notes.extra_food_weekly || 0) * 52 / 12 * shareFor(cache.settings?.default_split, who);
@@ -2382,7 +2401,7 @@ async function reportView() {
       ${groups.length ? `<table class="list rpt-tbl"><tbody>${groups.map(g => `<tr class="grp"><td><b>${esc(g.g)}</b></td><td class="num"><b>${M(g.total)}</b></td></tr>${g.lines.map(([n, v]) => `<tr class="sub"><td>${esc(n.replace(' (not counted)', ''))}</td><td class="num">${M(v)}</td></tr>`).join('')}`).join('')}</tbody>
         <tfoot><tr class="total"><td><b>Total living expenses</b></td><td class="num"><b>${M(livingM)}</b></td></tr></tfoot></table>
         ${foodFromBank < 80 * 52 / 12 && !extraFood ? `<div class="callout">Groceries from the bank are only about ${moneyRound(foodFromBank * 12 / 52)} a week for the household. If food is bought with Afterpay, cash or a card that isn’t in the app, put a realistic weekly amount in <b>Your answers</b> below — otherwise your living costs will look too low and the offer too high.</div>` : ''}
-        <p class="hint">Average actually spent over ${N === 1 ? 'the last full month' : `the last ${N} full months`} (${esc(rangeTxt)}); the current month is left out because it is only part-way through. Mortgage, loans and Afterpay are in Debts below, not here.${sum(Object.values(bnplPaidM), v => v) > 0.5 ? ' Afterpay and Deferit payments matched to a shop are counted here and taken off the repayment shown for those debts, so nothing is counted twice.' : ''}${unsorted > 0.5 ? ` ${M(unsorted)} ${per} isn’t sorted into a category yet — sorting it on <b>To sort</b> makes this more accurate.` : ''}</p>`
+        <p class="hint">Average actually spent over ${N === 1 ? 'the last full month' : `the last ${N} full months`} (${esc(rangeTxt)}); the current month is left out because it is only part-way through. Mortgage, loans and Afterpay are in Debts below, not here.${sum(Object.values(bnplPaidM), v => v) > 0.5 ? ' Afterpay and Deferit shopping is counted here by what it was spent on (payments matched to a shop, plus the instalments still to pay, at the rate they are being paid off) and taken off the repayment shown for those debts, so nothing is counted twice.' : ''}${unsorted > 0.5 ? ` ${M(unsorted)} ${per} isn’t sorted into a category yet — sorting it on <b>To sort</b> makes this more accurate.` : ''}</p>`
         : '<p class="empty">No spending in this period yet — import your statements.</p>'}
       <h3 style="margin-top:1.25rem">Month by month</h3>
       <table class="list rpt-tbl"><thead><tr><th>Month</th><th class="num">Money in</th><th class="num">Spending</th><th class="num">Left over</th></tr></thead><tbody>
