@@ -23,6 +23,7 @@ debt register with creditor contact log, shared costs with ex-partner, and a das
 | **To sort** | Uncategorised transactions grouped by payee; **One-off** or **Make rule**; **+ New category…** from any category list |
 | Payslips | Per person: **Scan payslip** (PDF or photo — read in the browser, every value checked before saving) or type one in; each payslip (earnings, tax, deductions, take-home, employer super, leave, YTD). Live check that it adds up and that super is at least 12%; totals by financial year, monthly chart, CSV, and 'Set up as regular income' |
 | Tax | Per person (Michael or Taslyn) and financial year: board received, claimable share of house costs (ATO floor-area × time method), net rental income, Centrelink board-income estimate, CSV for a tax agent, print |
+| Household | The people in the household (one login, any number of people): name, who they are, email, phone, notes. New accounts start with one person and a welcome form. The top switch shows Household or any one person; every bill, debt, account and tax year has a **Who pays** split — equal by default, or one person / custom % |
 | Import · Shared · Setup | Statement import (CSV/PDF, multi-account), shared-cost ledger, settings/accounts/categories/rules |
 
 ## First-time setup (about 15 minutes)

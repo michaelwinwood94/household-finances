@@ -1,0 +1,12 @@
+-- 018 household members (applied live; full SQL in Supabase migration history)
+--  * household_members: people inside one login (name, relationship, email, phone, notes, is_primary, sort_order); RLS own rows;
+--    the main person can't be deleted.
+--  * split jsonb on recurring_items, debts, accounts, tax_years; settings.default_split; payslips.member_id.
+--    null = split equally between everyone; otherwise {member_id: percent} adding to 100.
+--  * member_share(split, member, owner), split_without(split, member) (re-spreads a removed member's share).
+--  * sync_split_mirror trigger keeps my_share_pct / is_shared / is_joint in step (main person's share) for older views & checks.
+--  * members_changed trigger: removing a member re-spreads their share; adding/removing re-computes equal splits;
+--    settings.display_name / partner_label follow the members' names.
+--  * seed_defaults: a new login starts with one member with no name (the app's welcome form fills it in).
+--  * existing data: main person from display_name, the partner from partner_label; old % shares converted exactly.
+-- 019 budget_summary: 'people' keyed 'overall' + each member id, plus a 'members' list.
