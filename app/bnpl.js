@@ -106,7 +106,7 @@ export function parseDeferit({ main, dates }, todayISO) {
     const day = dd && Math.abs(dd.y - row) < rowH * 2.5 ? dd.d : null;
     const mon = mm && Math.abs(mm.y - row) < rowH * 4 ? mm.m : null;
     const due = day && mon != null ? inferYear(day, mon, todayISO) : null;
-    out.push({ provider: 'deferit', merchant: isFee ? 'Deferit monthly fee' : name, instalment_no: of[0], instalments_total: of[1], due_date: due, amount: a, is_fee: isFee, _day: day });
+    out.push({ provider: 'deferit', merchant: isFee ? 'Deferit monthly fee' : name.trim(), instalment_no: of[0], instalments_total: of[1], due_date: due, amount: a, is_fee: isFee, _day: day });
   });
   // The month label is often too faint to read. The list is in date order, so work it out: the first row is the next
   // occurrence of that day of the month, and each later row stays in the same month unless the day number drops.
@@ -137,6 +137,82 @@ export function mergeRows(rows) {
 // is this scanned row already in the saved list? (same date and amount, and the shop names agree, allowing for cut-off names)
 export function isKnown(row, existing) {
   const k = shopKey(row.merchant);
-  return existing.some(e => e.due_date === row.due_date && Math.abs(Number(e.amount) - Number(row.amount)) < 0.005
-    && (() => { const ek = shopKey(e.merchant); return ek === k || (k.length >= 4 && ek.length >= 4 && (ek.startsWith(k) || k.startsWith(ek))); })());
+  return existing.some(e => e.due_date === row.due_date && Math.abs(Number(e.amount) - Number(row.amount)) < 0.025   // a text-read 6 can come out as 8
+    && (() => { const ek = shopKey(e.merchant); return ek === k || (k.length >= 4 && ek.length >= 4 && (ek.startsWith(k) || k.startsWith(ek))) || (k.length >= 2 && ek.length >= 2 && k.slice(0, 2) === ek.slice(0, 2)); })());
+}
+
+// ---- PDFs saved from the portals' websites (picture-only, read as plain text lines) ----
+const PAGE_NOISE = /^\d{1,2}\/\d{1,2}\/\d{2,4},|https?:|^\d+\s?\/\s?\d+$|Upcoming payments\s*\|?|^\W*afterpay\W*(TB)?\W*$|\bdays?\b|^\W*\$[\d,]+\.\d{2}(\s+\$[\d,]+\.\d{2})*\W*$/i;
+function fragment(t) {
+  let s = t.replace(/(?:pay\s*)?\$\s?[\d,]+(?:\.\d{2})?/ig, ' ').replace(/[|@_~«»<>—–=•*]+/g, ' ').replace(/^[^A-Za-z0-9]+/, '').replace(/\s+/g, ' ').trim();
+  // an icon read as a short lowercase word in front of the shop name ("wow BigW", "cynic City Chic")
+  s = s.replace(/^(?:[A-Za-z]{1,2}\)|[a-z]{1,6}|WE|[A-Z]{1,2})\s+(?=[A-Z0-9][A-Za-z0-9])/, (m) => /^(?:[A-Z]{2}|[A-Z])\s/.test(m) && !/^WE\s/.test(m) && m.trim().length > 1 && /\s[A-Z]/.test(m) && false ? m : '');
+  return s;
+}
+export function parseAfterpayText(lines) {
+  const out = []; let buf = [];
+  for (const raw of lines) {
+    const l = String(raw || '').trim(); if (!l) continue;
+    const date = parseLongDate(l);
+    if (!date) { if (!PAGE_NOISE.test(l)) buf.push(l); continue; }
+    const block = buf; buf = [];
+    const am = block.map(b => /\$\s?([\d,]+\.\d{2})/.exec(b)).find(Boolean);
+    const am2 = am ? null : block.map(b => /\$\s?(\d{3,5})\b/.exec(b)).find(Boolean); // decimal point lost by OCR
+    const amount = am ? Number(am[1].replace(/,/g, '')) : am2 ? Number(am2[1]) / 100 : null;
+    const cands = block.map(fragment).filter(f => (f.match(/[A-Za-z]/g) || []).length >= 2 && !/^[A-Za-z]{1,2}$/.test(f) || /^[A-Z][a-z]$/.test(f));
+    let name = cands.length > 1 && cands[0].replace(/\W/g, '').length <= 3 && cands[1].replace(/\W/g, '').length <= 5 ? cands[0] + cands[1]
+      : cands.reduce((b, c) => (c.length > b.length ? c : b), '');
+    const lo = /([1-4])\s*(?:of|0f|ot)\s*4/i.exec(l); const of = parseOf(l) || (lo ? [Number(lo[1]), 4] : [null, null]);
+    out.push({ provider: 'afterpay', merchant: cleanMerchant(name), instalment_no: of[0], instalments_total: of[1] || 4, due_date: date, amount });
+  }
+  return out;
+}
+
+const MONTH_NAMES = ['january', 'february', 'march', 'april', 'may', 'june', 'july', 'august', 'september', 'october', 'november', 'december'];
+export function parseDeferitText(lines, todayISO) {
+  const out = []; let hdr = null, mon = null;
+  const L = lines.map(x => String(x || '').trim()).filter(Boolean);
+  L.forEach((l, i) => {
+    const h = /^(January|February|March|April|May|June|July|August|September|October|November|December)\s+(20\d{2})/i.exec(l);
+    if (h) { hdr = { m: MONTH_NAMES.indexOf(h[1].toLowerCase()), y: Number(h[2]) }; return; }
+    const mm = /^([A-Z]{3})$/.exec(l); if (mm && monthIdx(mm[1]) >= 0) { mon = monthIdx(mm[1]); return; }
+    const kind = /(Instalment|Monthly\s*fee)/i.exec(l); const a = toAmount(l);
+    if (!kind || a == null) return;
+    const isFee = /fee/i.test(kind[1]);
+    const before = l.slice(0, kind.index);
+    const dm = /(?:^|\s)0?(\d{1,2})\s+(?:\S{0,5}\s+)?$/.exec(before + ' ') || /(?:^|\s)0?(\d{1,2})\s*$/.exec(before.trim() + ' ');
+    let day = dm ? Number(dm[1]) : null, name = '';
+    const nm = /([A-Za-z]{1,3})\s?\.{2,}|([A-Za-z]{1,3})…/.exec(before); if (nm) name = nm[1] || nm[2];
+    const prev = L[i - 1] || '';
+    if (!name) { const pm = /^([A-Za-z]{1,3})\s?(\.{2,}|…)$/.exec(prev); if (pm) name = pm[1]; }
+    if (day == null || day < 1 || day > 31) { const pd = /^0?(\d{1,2})$/.exec(prev); day = pd ? Number(pd[1]) : null; }
+    const of = parseOf(l.slice(kind.index)) || [null, null];
+    let due = null;
+    if (day && mon != null) { const y = hdr ? (mon < hdr.m - 6 ? hdr.y + 1 : mon > hdr.m + 6 ? hdr.y - 1 : hdr.y) : null; due = y ? `${y}-${pad(mon + 1)}-${pad(day)}` : inferYear(day, mon, todayISO); }
+    out.push({ provider: 'deferit', merchant: isFee ? 'Deferit monthly fee' : name.trim(), truncated: !isFee, instalment_no: of[0], instalments_total: of[1], due_date: due, amount: a, is_fee: isFee });
+  });
+  return out;
+}
+
+// A cut-off shop name ("R…") is matched to a shop already in the saved list with the same amount (instalments of one purchase are equal)
+export function resolveTruncated(row, existing) {
+  if (!row.truncated || !row.merchant) return row;
+  const p = shopKey(row.merchant);
+  const pick = (pre) => [...new Set(existing.filter(e => Math.abs(Number(e.amount) - Number(row.amount)) < 0.005 && shopKey(e.merchant).startsWith(pre)).map(e => e.merchant))];
+  let cands = pick(p);
+  if (!cands.length && p.length > 1) cands = pick(p.slice(-1));   // a stray icon read as a letter in front of the real initial
+  return cands.length === 1 ? { ...row, merchant: cands[0], truncated: false } : row;
+}
+
+// Which provider's "Upcoming payments" page is this (lines of text read from a picture-only PDF)? null if neither.
+export function detectBnplPdf(pages) {
+  const t = pages.flat().join('\n');
+  const n = (re) => (t.match(re) || []).length;
+  if (/deferit/i.test(t) && n(/Instalment|Monthly\s*fee/gi) >= 2) return 'deferit';
+  if (n(/\bpay\s*\$\s?[\d,]+/gi) >= 3 && n(/\b[1-4]\s*(?:of|0f|ot)\s*4/gi) >= 3) return 'afterpay';
+  return null;
+}
+export function parseBnplPdf(provider, pages, todayISO) {
+  const lines = pages.flat();
+  return provider === 'deferit' ? parseDeferitText(lines, todayISO) : parseAfterpayText(lines);
 }

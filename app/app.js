@@ -1,11 +1,11 @@
 import { createClient } from 'https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2/+esm';
-import { SUPABASE_URL, SUPABASE_PUBLISHABLE_KEY } from './config.js?v=202611240300';
-import { parseBankCsv, parseWestpacActivity, parseScannedPdf, parseLatitudeStatement, isLatitudeStatement, splitAccounts, linesFromItems } from './csv.js?v=202611240300';
-import { readPayslip, toLines } from './payslip.js?v=202611240300';
-import { readBill } from './bill.js?v=202611240300';
-import { parseAfterpay, parseDeferit, mergeRows, isKnown, shopKey, bestShopKey } from './bnpl.js?v=202611240300';
-import { toast, softDelete, busy, friendlyError, watchOnline, info, wireInfoTips, skeleton, wireInstall, applyPrefs, settingsMenu, prefs, setPref, store } from './ui.js?v=202611240300';
-import { columnChart, hbarChart, lineChart, SERIES, moneyRound, moneyCompact } from './charts.js?v=202611240300';
+import { SUPABASE_URL, SUPABASE_PUBLISHABLE_KEY } from './config.js?v=202611240400';
+import { parseBankCsv, parseWestpacActivity, parseScannedPdf, parseLatitudeStatement, isLatitudeStatement, splitAccounts, linesFromItems } from './csv.js?v=202611240400';
+import { readPayslip, toLines } from './payslip.js?v=202611240400';
+import { readBill } from './bill.js?v=202611240400';
+import { parseAfterpay, parseDeferit, mergeRows, isKnown, shopKey, bestShopKey, detectBnplPdf, parseBnplPdf, resolveTruncated } from './bnpl.js?v=202611240400';
+import { toast, softDelete, busy, friendlyError, watchOnline, info, wireInfoTips, skeleton, wireInstall, applyPrefs, settingsMenu, prefs, setPref, store } from './ui.js?v=202611240400';
+import { columnChart, hbarChart, lineChart, SERIES, moneyRound, moneyCompact } from './charts.js?v=202611240400';
 
 const sb = createClient(SUPABASE_URL, SUPABASE_PUBLISHABLE_KEY);
 const $ = (s, el = document) => el.querySelector(s);
@@ -1122,13 +1122,29 @@ async function importView() {
               if (isLatitudeStatement(pg)) return parseLatitudeStatement(pg);
               if (pg.flat().length < 15) {   // a picture-only PDF (e.g. a printed Westpac page): read it by text recognition
                 pv.innerHTML = `<p>Scanned PDF — reading ${esc(file.name)}…</p>`;
-                return parseScannedPdf(await ocrPdfPages(file, (pgNo, n, pct) => { pv.innerHTML = `<p>Scanned PDF — reading ${esc(file.name)}: page ${pgNo} of ${n}${pct != null ? ' · ' + pct + '%' : ''}…</p>`; }));
+                const ocr = await ocrPdfPages(file, (pgNo, n, pct) => { pv.innerHTML = `<p>Scanned PDF — reading ${esc(file.name)}: page ${pgNo} of ${n}${pct != null ? ' · ' + pct + '%' : ''}…</p>`; });
+                const bp = detectBnplPdf(ocr);   // an Afterpay / Deferit "Upcoming payments" page rather than a bank page
+                if (bp) return { format: 'bnpl-pdf', provider: bp, rows: parseBnplPdf(bp, ocr, new Date().toISOString().slice(0, 10)), skipped: [] };
+                return parseScannedPdf(ocr);
               }
               return parseWestpacActivity(pg);
             })()
           : parseBankCsv(await file.text());
       } catch (err) { parsed = { format: 'unknown', rows: [], skipped: [], error: 'Could not read this file: ' + err.message }; }
       for (const part of (parsed.error ? [parsed] : splitAccounts(parsed))) parsedFiles.push({ file, parsed: part });
+    }
+    const bnplJobs = parsedFiles.filter(x => x.parsed.format === 'bnpl-pdf');
+    if (bnplJobs.length) {
+      pv.innerHTML = '';
+      for (const { parsed } of bnplJobs) {
+        const label = parsed.provider === 'afterpay' ? 'Afterpay' : 'Deferit';
+        const debt = cache.debts.find(d => d.status === 'active' && new RegExp(parsed.provider, 'i').test(d.creditor));
+        if (!debt) { toast(`This is a ${label} page — add ${label} under Debts first.`, 6000); continue; }
+        if (!parsed.rows.length) { toast(`Couldn't find any payments on that ${label} page.`, 6000); continue; }
+        await bnplReview(debt, parsed.provider, parsed.rows);
+      }
+      parsedFiles.splice(0, parsedFiles.length, ...parsedFiles.filter(x => x.parsed.format !== 'bnpl-pdf'));
+      if (!parsedFiles.length) { e.target.value = ''; return; }
     }
     for (const { file, parsed } of parsedFiles) {
       const acc = parsed.account || {};
@@ -1563,7 +1579,7 @@ async function scanBnpl(provider, after) {
   const label = provider === 'afterpay' ? 'Afterpay' : 'Deferit';
   const debt = cache.debts.find(d => d.status === 'active' && new RegExp(provider, 'i').test(d.creditor));
   if (!debt) { toast(`Add ${label} under Debts first.`, 5000); return; }
-  const inp = document.createElement('input'); inp.type = 'file'; inp.accept = 'image/*'; inp.multiple = true;
+  const inp = document.createElement('input'); inp.type = 'file'; inp.accept = 'image/*,application/pdf'; inp.multiple = true;
   inp.onchange = async () => {
     const files = [...inp.files]; if (!files.length) return;
     try {
@@ -1571,6 +1587,11 @@ async function scanBnpl(provider, after) {
       for (let i = 0; i < files.length; i++) {
         const tag = files.length > 1 ? ` ${i + 1} of ${files.length}` : '';
         toast(`Reading screenshot${tag}…`, 90000);
+        if (/\.pdf$/i.test(files[i].name) || files[i].type === 'application/pdf') {
+          const ocr = await ocrPdfPages(files[i], (pg, n, pct) => toast(`Reading PDF${tag} — page ${pg} of ${n}${pct != null ? ' · ' + pct + '%' : ''}…`, 90000));
+          rows = rows.concat(parseBnplPdf(provider, ocr, new Date().toISOString().slice(0, 10)));
+          continue;
+        }
         rows = rows.concat(await readBnplImage(files[i], provider, p => toast(`Reading screenshot${tag}… ${p}%`, 90000)));
       }
       rows = mergeRows(rows);
@@ -1587,6 +1608,7 @@ async function bnplReview(debt, provider, rows) {
     q(sb.from('shop_categories').select('shop_key, category_id')),
   ]);
   const known = new Map(shops.map(s => [s.shop_key, s.category_id])), keys = [...known.keys()];
+  rows = rows.map(r => resolveTruncated(r, existing));
   const items = rows.map(r => {
     const dup = r.amount != null && !!r.due_date && isKnown(r, existing), k = bestShopKey(r.merchant, keys);
     return { ...r, dup, cat: k ? known.get(k) : '', on: !dup && !r.is_fee && r.amount != null && !!r.due_date };
