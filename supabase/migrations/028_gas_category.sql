@@ -1,0 +1,3 @@
+-- Applied live: new essential expense category "Gas" (also added to seed_defaults for new accounts);
+-- added to tax_years.included_categories (household costs shared with boarders for the ATO floor-area claim);
+-- LP JA Fryer instalments set to Gas.
