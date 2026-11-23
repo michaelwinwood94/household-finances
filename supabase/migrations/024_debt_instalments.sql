@@ -1,2 +1,4 @@
 -- Applied live: table debt_instalments (owner_id, debt_id, due_date, merchant, amount, is_paid, paid_on) with own-rows RLS.
 -- Holds dated instalments for BNPL debts (Afterpay); the debt's current_balance is the sum of unpaid rows.
+-- Also applied live (forecast_uses_instalments): Deferit instalments added; insights_for() now takes unpaid debt_instalments as forecast events
+-- and leaves Afterpay/Deferit bank payments out of the usual-daily-spend average so they aren't counted twice.

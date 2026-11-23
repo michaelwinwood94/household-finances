@@ -30,6 +30,9 @@ debt register with creditor contact log, shared costs with ex-partner, and a das
 | Household | The people in the household (one login, any number of people): name, who they are, email, phone, notes. New accounts start with one person and a welcome form. The top switch shows Household or any one person; every bill, debt, account and tax year has a **Who pays** split — equal by default, or one person / custom % |
 | Import · Shared · Setup | **Scan a bill** (PDF or photo: biller, amount due, due date, billing period, BPAY code; only the last 4 of any reference kept; check it, then update the matching bill or add a new one) · statement import (CSV/PDF, multi-account), shared-cost ledger, settings/accounts/categories/rules |
 
+## Put it on your phone
+Open the app address in Safari (iPhone) or Chrome (Android), then **Share → Add to Home Screen** (iPhone) or menu → **Install app** (Android). It opens full screen like any app. The ⬇ Install button in the top bar shows the steps.
+
 ## First-time setup (about 15 minutes)
 
 ### 1. Tell Supabase where the app lives

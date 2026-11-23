@@ -112,7 +112,16 @@ export const skeleton = (tiles = 4, blocks = 2) => `<div class="sk sk-title"></d
 export function wireInstall() {
   let deferred = null;
   const btn = $('#install-btn');
+  const standalone = matchMedia('(display-mode: standalone)').matches || navigator.standalone === true;
+  const ios = /iphone|ipad|ipod/i.test(navigator.userAgent) || (navigator.platform === 'MacIntel' && navigator.maxTouchPoints > 1);
   addEventListener('beforeinstallprompt', e => { e.preventDefault(); deferred = e; btn.classList.remove('hidden'); });
-  btn.onclick = async () => { if (!deferred) return; deferred.prompt(); await deferred.userChoice; deferred = null; btn.classList.add('hidden'); };
+  // iPhone and iPad never fire the install prompt, so show the steps instead.
+  if (ios && !standalone) btn.classList.remove('hidden');
+  addEventListener('appinstalled', () => btn.classList.add('hidden'));
+  btn.onclick = async () => {
+    if (deferred) { deferred.prompt(); await deferred.userChoice; deferred = null; btn.classList.add('hidden'); return; }
+    if (ios) toast('On iPhone: tap the Share button in Safari, then "Add to Home Screen".', { ms: 9000 });
+    else toast('In your browser menu choose "Add to Home screen" or "Install app".', { ms: 7000 });
+  };
   if ('serviceWorker' in navigator && location.protocol === 'https:') navigator.serviceWorker.register('sw.js').catch(() => {});
 }
