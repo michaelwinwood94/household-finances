@@ -1,0 +1,4 @@
+-- Applied live: debt_instalments.prev_txn_category_id; trigger instalment_category_sync (undo match -> payment returns to its old category;
+-- changing a shop's category moves its matched payments). match_instalments() now gives a matched bank payment the instalment's category
+-- (not if manually categorised). insights_for(): BNPL-vs-income chart counts Afterpay/Deferit by description as well as category.
+-- The forecast already ignored these payments by description, so recategorising doesn't double count there.

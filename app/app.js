@@ -1,10 +1,10 @@
 import { createClient } from 'https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2/+esm';
-import { SUPABASE_URL, SUPABASE_PUBLISHABLE_KEY } from './config.js?v=202611232105';
-import { parseBankCsv, parseWestpacActivity, splitAccounts, linesFromItems } from './csv.js?v=202611232105';
-import { readPayslip, toLines } from './payslip.js?v=202611232105';
-import { readBill } from './bill.js?v=202611232105';
-import { toast, softDelete, busy, friendlyError, watchOnline, info, wireInfoTips, skeleton, wireInstall, applyPrefs, settingsMenu, prefs, setPref, store } from './ui.js?v=202611232105';
-import { columnChart, hbarChart, lineChart, SERIES, moneyRound, moneyCompact } from './charts.js?v=202611232105';
+import { SUPABASE_URL, SUPABASE_PUBLISHABLE_KEY } from './config.js?v=202611232130';
+import { parseBankCsv, parseWestpacActivity, splitAccounts, linesFromItems } from './csv.js?v=202611232130';
+import { readPayslip, toLines } from './payslip.js?v=202611232130';
+import { readBill } from './bill.js?v=202611232130';
+import { toast, softDelete, busy, friendlyError, watchOnline, info, wireInfoTips, skeleton, wireInstall, applyPrefs, settingsMenu, prefs, setPref, store } from './ui.js?v=202611232130';
+import { columnChart, hbarChart, lineChart, SERIES, moneyRound, moneyCompact } from './charts.js?v=202611232130';
 
 const sb = createClient(SUPABASE_URL, SUPABASE_PUBLISHABLE_KEY);
 const $ = (s, el = document) => el.querySelector(s);
@@ -2134,7 +2134,7 @@ async function reportView() {
   const now = new Date(), m0 = new Date(now.getFullYear(), now.getMonth() - 3, 1).toLocaleDateString('en-CA'), m1 = new Date(now.getFullYear(), now.getMonth(), 1).toLocaleDateString('en-CA');
   const [items, txns, debtsRaw, contacts, bal, ins] = await Promise.all([
     q(sb.from('recurring_items').select('*').eq('is_active', true)),
-    q(sb.from('transactions').select('amount, category_id, account_id, txn_date, recurring_item_id').gte('txn_date', m0).lt('txn_date', m1).range(0, 9999)),
+    q(sb.from('transactions').select('amount, category_id, account_id, txn_date, recurring_item_id, description').gte('txn_date', m0).lt('txn_date', m1).range(0, 9999)),
     q(sb.from('debts').select('*').eq('status', 'active').order('priority').order('current_balance', { ascending: false })),
     q(sb.from('debt_contacts').select('*').order('contact_date', { ascending: false }).limit(200)),
     q(sb.from('v_account_balances').select('*').eq('is_active', true)),
@@ -2156,6 +2156,7 @@ async function reportView() {
 
   // living expenses: actual average of the last 3 full months, grouped like a hardship form (debt repayments are listed separately)
   const exp = new Map();
+  const bnplPaidM = {};   // Afterpay/Deferit payments now sitting in living-cost categories, per month by provider
   let unsorted = 0;
   for (const t of txns) {
     if (t.amount >= 0) continue;
@@ -2164,6 +2165,7 @@ async function reportView() {
     const share = shareFor(t.recurring_item_id ? itemSplit.get(t.recurring_item_id) : cache.settings?.default_split, who);
     const amt = -t.amount * share / 3;
     if (!c) { unsorted += amt; continue; }
+    const bp = /afterpay|deferit/i.exec(t.description || ''); if (bp) bnplPaidM[bp[0].toLowerCase()] = (bnplPaidM[bp[0].toLowerCase()] || 0) + amt;
     const g = EXP_GROUPS.find(([, re]) => re.test(c.name))[0];
     if (!exp.has(g)) exp.set(g, new Map());
     exp.get(g).set(c.name, (exp.get(g).get(c.name) || 0) + amt);
@@ -2180,7 +2182,7 @@ async function reportView() {
   // debts
   const debts = debtsRaw.map(d => { const sh = shareFor(d.split, who);
     const last = contacts.find(c => c.debt_id === d.id);
-    return { ...d, sh, bal: Number(d.current_balance || 0) * sh, arr: Number(d.arrears_amount || 0) * sh, repM: Number(d.min_payment || 0) * PER_MONTH[d.payment_frequency || 'monthly'] * sh, last,
+    return { ...d, sh, bal: Number(d.current_balance || 0) * sh, arr: Number(d.arrears_amount || 0) * sh, repM: Math.max(0, Number(d.min_payment || 0) * PER_MONTH[d.payment_frequency || 'monthly'] * sh - (d.debt_type === 'bnpl' ? bnplPaidM[(d.creditor || '').split(' ')[0].toLowerCase()] || 0 : 0)), last,
       secured: ['mortgage', 'car_loan'].includes(d.debt_type) }; }).filter(d => d.sh > 0);
   const debtTotal = sum(debts, d => d.bal), arrTotal = sum(debts, d => d.arr), repM = sum(debts, d => d.repM);
   const available = incomeM - livingM, after = available - repM;
@@ -2242,7 +2244,7 @@ async function reportView() {
       ${groups.length ? `<table class="list rpt-tbl"><tbody>${groups.map(g => `<tr class="grp"><td><b>${esc(g.g)}</b></td><td class="num"><b>${M(g.total)}</b></td></tr>${g.lines.map(([n, v]) => `<tr class="sub"><td>${esc(n.replace(' (not counted)', ''))}</td><td class="num">${M(v)}</td></tr>`).join('')}`).join('')}</tbody>
         <tfoot><tr class="total"><td><b>Total living expenses</b></td><td class="num"><b>${M(livingM)}</b></td></tr></tfoot></table>
         ${foodFromBank < 80 * 52 / 12 && !extraFood ? `<div class="callout">Groceries from the bank are only about ${moneyRound(foodFromBank * 12 / 52)} a week for the household. If food is bought with Afterpay, cash or a card that isn’t in the app, put a realistic weekly amount in <b>Your answers</b> below — otherwise your living costs will look too low and the offer too high.</div>` : ''}
-        <p class="hint">Average actually spent over the last 3 full months (${esc(fmtDate(m0))} – ${esc(fmtDate(new Date(new Date(m1) - 864e5).toLocaleDateString('en-CA')))}). Mortgage, loans and Afterpay are in Debts below, not here.${unsorted > 0.5 ? ` ${M(unsorted)} ${per} isn’t sorted into a category yet — sorting it on <b>To sort</b> makes this more accurate.` : ''}</p>`
+        <p class="hint">Average actually spent over the last 3 full months (${esc(fmtDate(m0))} – ${esc(fmtDate(new Date(new Date(m1) - 864e5).toLocaleDateString('en-CA')))}). Mortgage, loans and Afterpay are in Debts below, not here.${sum(Object.values(bnplPaidM), v => v) > 0.5 ? ' Afterpay and Deferit payments matched to a shop are counted here and taken off the repayment shown for those debts, so nothing is counted twice.' : ''}${unsorted > 0.5 ? ` ${M(unsorted)} ${per} isn’t sorted into a category yet — sorting it on <b>To sort</b> makes this more accurate.` : ''}</p>`
         : '<p class="empty">No spending in the last 3 months yet — import your statements.</p>'}
     </details>
 
