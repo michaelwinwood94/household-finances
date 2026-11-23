@@ -1,11 +1,11 @@
 import { createClient } from 'https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2/+esm';
-import { SUPABASE_URL, SUPABASE_PUBLISHABLE_KEY } from './config.js?v=202611240515';
-import { parseBankCsv, parseWestpacActivity, parseScannedPdf, parseLatitudeStatement, isLatitudeStatement, splitAccounts, linesFromItems } from './csv.js?v=202611240515';
-import { readPayslip, toLines } from './payslip.js?v=202611240515';
-import { readBill } from './bill.js?v=202611240515';
-import { parseAfterpay, parseDeferit, mergeRows, isKnown, shopKey, bestShopKey, detectBnplPdf, parseBnplPdf, resolveTruncated, detectBnplPaste, parseBnplPaste } from './bnpl.js?v=202611240515';
-import { toast, softDelete, busy, friendlyError, watchOnline, info, wireInfoTips, skeleton, wireInstall, applyPrefs, settingsMenu, prefs, setPref, store } from './ui.js?v=202611240515';
-import { columnChart, hbarChart, lineChart, SERIES, moneyRound, moneyCompact } from './charts.js?v=202611240515';
+import { SUPABASE_URL, SUPABASE_PUBLISHABLE_KEY } from './config.js?v=202611240530';
+import { parseBankCsv, parseWestpacActivity, parseScannedPdf, parseLatitudeStatement, isLatitudeStatement, splitAccounts, linesFromItems, parseBankPaste } from './csv.js?v=202611240530';
+import { readPayslip, toLines } from './payslip.js?v=202611240530';
+import { readBill } from './bill.js?v=202611240530';
+import { parseAfterpay, parseDeferit, mergeRows, isKnown, shopKey, bestShopKey, detectBnplPdf, parseBnplPdf, resolveTruncated, detectBnplPaste, parseBnplPaste } from './bnpl.js?v=202611240530';
+import { toast, softDelete, busy, friendlyError, watchOnline, info, wireInfoTips, skeleton, wireInstall, applyPrefs, settingsMenu, prefs, setPref, store } from './ui.js?v=202611240530';
+import { columnChart, hbarChart, lineChart, SERIES, moneyRound, moneyCompact } from './charts.js?v=202611240530';
 
 const sb = createClient(SUPABASE_URL, SUPABASE_PUBLISHABLE_KEY);
 const $ = (s, el = document) => el.querySelector(s);
@@ -1087,12 +1087,12 @@ async function importView() {
     return `<span class="chip"><span class="fresh"><span class="fresh-dot ${d == null || d > 14 ? 'stale' : d > 7 ? 'old' : ''}"></span>${esc(a.name)}: ${d == null ? 'no data yet' : 'up to ' + fmtDate(a.last_transaction_date)}</span></span>`; }).join('')}</div>` : '';
   const links = allLinks().filter(l => !['government', 'help'].includes(l.kind)).sort((a, b) => a.name.localeCompare(b.name));
   const linksHtml = links.length ? `<div class="chips">${links.map(l => `<a class="chip link-chip" href="${esc(l.url)}" target="_blank" rel="noopener noreferrer">Open ${esc(l.name)} ↗</a>`).join('')}</div>` : '';
-  view.innerHTML = `<div class="page-head"><div><h1 class="page-title">Import</h1><p class="hint">Add statements: CommBank or Westpac CSV or PDF, a Latitude loan statement PDF, or an Afterpay / Deferit upcoming-payments PDF.</p></div></div>${freshHtml}${linksHtml}<section class="card"><h2>Choose files</h2>
+  view.innerHTML = `<div class="page-head"><div><h1 class="page-title">Import</h1><p class="hint">Add statements: CommBank or Westpac CSV or pasted page, a Latitude loan statement PDF, or an Afterpay / Deferit pasted page.</p></div></div>${freshHtml}${linksHtml}<section class="card"><h2>Choose files</h2>
     <p class="hint">Choose one or more files at once. Each file is matched to an account (or a new one is set up for you), and importing the same dates twice is safe — duplicates are skipped.</p>
     <ul class="hint">
-      <li><b>Bank accounts (CommBank, Westpac):</b> a CSV export, the Westpac Account activity PDF, or a page saved as a PDF from the website (CommBank NetBank or Westpac Online Banking).</li>
+      <li><b>Bank accounts (CommBank, Westpac):</b> a CSV export, the Westpac Account activity PDF, or the page text pasted in the box below (best). A page saved as a PDF from the website still works but is less reliable.</li>
       <li><b>Latitude loan:</b> the PDF eStatement. It also updates the Latitude debt.</li>
-      <li><b>Afterpay or Deferit:</b> the upcoming-payments page saved as a PDF. You check each row before anything is added.</li>
+      <li><b>Afterpay or Deferit:</b> the page text pasted in the box below (best), or the page saved as a PDF. You check each row before anything is added.</li>
       <li>Pictures saved as a PDF are read on this device by text recognition, which takes a few seconds a page.</li>
     </ul>
     <label>Statement files <input type="file" id="i-file" accept=".csv,text/csv,.pdf,application/pdf" multiple></label>
@@ -1101,14 +1101,19 @@ async function importView() {
       <label>Bill file <input type="file" id="b-file" accept="application/pdf,.pdf,image/*"></label></section>
     <section class="card"><h2>Scan Afterpay or Deferit</h2><p class="hint">Screenshots or the saved PDF of the portal's upcoming payments page (several at once is fine). It reads each shop, amount and date, fills in the category, and you check before saving. The PDF can also go in <b>Choose files</b>; pasting the page text (below) is more reliable.</p>
       <div class="row"><button class="scan-bnpl" data-p="afterpay">Scan Afterpay</button><button class="scan-bnpl" data-p="deferit">Scan Deferit</button></div></section>
-    <section class="card"><h2>Paste Afterpay or Deferit page text</h2><p class="hint">The most reliable way. Open the upcoming-payments page, press Ctrl+A then Ctrl+C, paste it here and press Read. It works out which provider it is, and you check every row before saving.</p>
+    <section class="card"><h2>Paste page text</h2><p class="hint">The most reliable way for Westpac, CommBank, Afterpay and Deferit. Open the account or upcoming-payments page (on Westpac and CommBank, load the dates you need first), press Ctrl+A then Ctrl+C, paste it here and press Read. It works out which page it is; you check everything before it is saved.</p>
       <label>Page text <textarea id="p-text" rows="4" placeholder="Paste here…"></textarea></label>
       <div class="row"><button class="primary" id="p-go">Read pasted text</button></div></section>
     <section class="card" id="i-history"></section>`;
   view.querySelectorAll('.scan-bnpl').forEach(b => b.onclick = () => scanBnpl(b.dataset.p, () => show('debts')));
   $('#p-go').onclick = async () => {
     const text = $('#p-text').value, prov = detectBnplPaste(text);
-    if (!prov) { toast("That doesn't look like the Afterpay or Deferit upcoming-payments page. Copy the whole page (Ctrl+A, Ctrl+C).", 7000); return; }
+    if (!prov && parseBankPaste(text)) {   // a Westpac or CommBank account page: run it through the normal import
+      const dt = new DataTransfer(); dt.items.add(new File([text], 'pasted-page.txt', { type: 'text/plain' }));
+      $('#i-file').files = dt.files; $('#p-text').value = '';
+      await $('#i-file').onchange({ target: $('#i-file') }); return;
+    }
+    if (!prov) { toast("That doesn't look like a Westpac, CommBank, Afterpay or Deferit page. Copy the whole page (Ctrl+A, Ctrl+C).", 7000); return; }
     const label = prov === 'afterpay' ? 'Afterpay' : 'Deferit';
     const debt = cache.debts.find(d => d.status === 'active' && new RegExp(prov, 'i').test(d.creditor));
     if (!debt) { toast(`Add ${label} under Debts first.`, 5000); return; }
@@ -1149,7 +1154,7 @@ async function importView() {
               }
               return parseWestpacActivity(pg);
             })()
-          : parseBankCsv(await file.text());
+          : (t => parseBankPaste(t) || parseBankCsv(t))(await file.text());
       } catch (err) { parsed = { format: 'unknown', rows: [], skipped: [], error: 'Could not read this file: ' + err.message }; }
       for (const part of (parsed.error ? [parsed] : splitAccounts(parsed))) parsedFiles.push({ file, parsed: part });
     }

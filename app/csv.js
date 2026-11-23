@@ -402,3 +402,76 @@ export function parseScannedPdf(pages) {
   if (/NetBank/i.test(head)) return parseCommbankOcr(pages);
   return parseWestpacOcr(pages);
 }
+
+// Text copied from the CommBank NetBank account page (Ctrl+A, Ctrl+C): date headings, then a description line and an
+// amount line ("-37.50 dollars-$37.50 <tab><tab> 26.53 dollars$26.53" — debit/credit, then running balance).
+const MON3 = { Jan: 1, Feb: 2, Mar: 3, Apr: 4, May: 5, Jun: 6, Jul: 7, Aug: 8, Sep: 9, Oct: 10, Nov: 11, Dec: 12 };
+export function isCommbankPaste(text) {
+  return /Debit\s+Credit\s+Balance/.test(text) && /commbank|netbank/i.test(text) && /\b(?:Mon|Tue|Wed|Thu|Fri|Sat|Sun)\w* \d{1,2} [A-Z][a-z]{2} \d{4}/.test(text);
+}
+export function parseCommbankPaste(text) {
+  const lines = String(text).split(/\r?\n/).map(l => l.trim()).filter(Boolean);
+  if (!isCommbankPaste(text)) return { format: 'unknown', rows: [], skipped: [], error: 'This doesn’t look like text copied from the CommBank account page.' };
+  const DATE = /^(?:Mon|Tue|Wed|Thu|Fri|Sat|Sun)\w* (\d{1,2}) ([A-Z][a-z]{2}) (\d{4})\b/;
+  const MONEY = /([+-]?)\$([\d,]+\.\d{2})/g;
+  const num = (sg, v) => (sg === '-' ? -1 : 1) * Number(v.replace(/,/g, ''));
+  const r2 = x => Math.round(x * 100) / 100;
+  const accNo = text.match(/Acc(?:ount)? Number\s+([\d ]{6,})/);
+  const bi = lines.findIndex(l => /^BSB\b/.test(l));
+  const name = bi > 0 ? lines[bi - 1] : '';
+  let started = false, date = null, pending = false, desc = null; const raw = [], skipped = [];
+  for (const l of lines) {
+    if (/^Manage my card/i.test(l)) break;
+    if (!started) { if (DATE.test(l)) started = true; else continue; }
+    const d = DATE.exec(l);
+    if (d) { date = `${d[3]}-${String(MON3[d[2]]).padStart(2, '0')}-${String(d[1]).padStart(2, '0')}`; pending = false; desc = null; continue; }
+    if (/^pending\b/i.test(l)) { pending = true; continue; }
+    const ms = [...l.matchAll(MONEY)];
+    if (ms.length >= 2 && /^[+-]?[\d,]+\.\d{2}\s+dollars/.test(l)) {
+      if (desc && date && !pending) raw.push({ date, description: desc, amount: num(ms[0][1], ms[0][2]), balance: num(ms[ms.length - 1][1], ms[ms.length - 1][2]) });
+      else if (desc && pending) skipped.push({ line: 0, reason: 'pending', raw: desc });
+      desc = null; continue;
+    }
+    const link = /^\[(.*)\]\(.*\)$/.exec(l);
+    desc = (link ? link[1] : l).replace(/\s+/g, ' ').trim();
+  }
+  const gaps = [];
+  raw.forEach((r, i) => { const n = raw[i + 1]; if (n && Math.abs(r2(r.balance - n.balance) - r.amount) > 0.005) gaps.push(r.date); });
+  const notes = [];
+  if (gaps.length) notes.push(`The running balance doesn’t add up near ${[...new Set(gaps)].map(d => d.split('-').reverse().join('/')).slice(0, 6).join(', ')} — check those dates after importing.`);
+  if (skipped.length) notes.push(`${skipped.length} pending transaction${skipped.length > 1 ? 's' : ''} skipped — they come in once they settle.`);
+  return { format: 'commbank-pdf-scan', account: { name, last4: accNo ? accNo[1].replace(/\D/g, '').slice(-4) : '', balance: raw[0]?.balance ?? null }, rows: raw.map(r => ({ ...r, amount: r2(r.amount) })), skipped, notes };
+}
+
+// Text copied from the Westpac Online Banking "Account activity" page: one tab-separated line per transaction
+// ("24 Nov 2026 <tab><tab> DESCRIPTIONClick for details <tab> -$62.95 <tab><tab> $171.45"), newest first.
+export function isWestpacPaste(text) {
+  return /Click for details/.test(text) && /^\d{1,2} [A-Z][a-z]{2} \d{4}\s/m.test(text);
+}
+export function parseWestpacPaste(text) {
+  const lines = String(text).split(/\r?\n/).map(l => l.replace(/\s+$/, ''));
+  if (!isWestpacPaste(text)) return { format: 'unknown', rows: [], skipped: [], error: 'This doesn’t look like text copied from the Westpac Account activity page.' };
+  const r2 = x => Math.round(x * 100) / 100, val = t => Number(t.replace(/[$,]/g, ''));
+  const rows = [], skipped = [];
+  for (const l of lines) {
+    const m = /^(\d{1,2}) ([A-Z][a-z]{2}) (\d{4})\s+(.*?)\s*Click for details(.*)$/.exec(l.trim());
+    if (!m) continue;
+    const toks = m[5].match(/-?\$[\d,]+\.\d{2}/g) || [];
+    if (toks.length < 2) { skipped.push({ line: 0, reason: 'amount not found', raw: m[4] }); continue; }
+    rows.push({ date: `${m[3]}-${String(MON3[m[2]]).padStart(2, '0')}-${String(m[1]).padStart(2, '0')}`, description: m[4].replace(/\s+/g, ' ').trim(), amount: r2(val(toks[0])), balance: val(toks[toks.length - 1]) });
+  }
+  const gaps = [];
+  rows.forEach((r, i) => { const n = rows[i + 1]; if (n && Math.abs(r2(r.balance - n.balance) - r.amount) > 0.005) gaps.push(r.date); });
+  const acc = text.match(/Account number:\s*([\d ]+)/i), bi = lines.findIndex(l => /^BSB:/.test(l.trim()));
+  const notes = [];
+  const more = text.match(/Showing (\d+) of (\d+)/);
+  if (more && Number(more[1]) < Number(more[2])) notes.push(`Westpac is showing ${more[1]} of ${more[2]} transactions — click “Display more transactions” until you reach the date you need, then copy again.`);
+  if (gaps.length) notes.push(`The running balance doesn’t add up near ${[...new Set(gaps)].map(d => d.split('-').reverse().join('/')).slice(0, 6).join(', ')} — check those dates after importing.`);
+  return { format: 'westpac-pdf-scan', account: { name: bi > 0 ? lines[bi - 1].trim() : '', last4: acc ? acc[1].replace(/\D/g, '').slice(-4) : '', balance: rows[0]?.balance ?? null }, rows, skipped, notes };
+}
+// Which bank's page was pasted? null when it is neither (so the text is treated as a CSV)
+export function parseBankPaste(text) {
+  if (isCommbankPaste(text)) return parseCommbankPaste(text);
+  if (isWestpacPaste(text)) return parseWestpacPaste(text);
+  return null;
+}
