@@ -1,11 +1,11 @@
 import { createClient } from 'https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2/+esm';
-import { SUPABASE_URL, SUPABASE_PUBLISHABLE_KEY } from './config.js?v=202611240030';
-import { parseBankCsv, parseWestpacActivity, parseLatitudeStatement, isLatitudeStatement, splitAccounts, linesFromItems } from './csv.js?v=202611240030';
-import { readPayslip, toLines } from './payslip.js?v=202611240030';
-import { readBill } from './bill.js?v=202611240030';
-import { parseAfterpay, parseDeferit, mergeRows, isKnown, shopKey, bestShopKey } from './bnpl.js?v=202611240030';
-import { toast, softDelete, busy, friendlyError, watchOnline, info, wireInfoTips, skeleton, wireInstall, applyPrefs, settingsMenu, prefs, setPref, store } from './ui.js?v=202611240030';
-import { columnChart, hbarChart, lineChart, SERIES, moneyRound, moneyCompact } from './charts.js?v=202611240030';
+import { SUPABASE_URL, SUPABASE_PUBLISHABLE_KEY } from './config.js?v=202611240048';
+import { parseBankCsv, parseWestpacActivity, parseLatitudeStatement, isLatitudeStatement, splitAccounts, linesFromItems } from './csv.js?v=202611240048';
+import { readPayslip, toLines } from './payslip.js?v=202611240048';
+import { readBill } from './bill.js?v=202611240048';
+import { parseAfterpay, parseDeferit, mergeRows, isKnown, shopKey, bestShopKey } from './bnpl.js?v=202611240048';
+import { toast, softDelete, busy, friendlyError, watchOnline, info, wireInfoTips, skeleton, wireInstall, applyPrefs, settingsMenu, prefs, setPref, store } from './ui.js?v=202611240048';
+import { columnChart, hbarChart, lineChart, SERIES, moneyRound, moneyCompact } from './charts.js?v=202611240048';
 
 const sb = createClient(SUPABASE_URL, SUPABASE_PUBLISHABLE_KEY);
 const $ = (s, el = document) => el.querySelector(s);
@@ -1201,12 +1201,12 @@ async function importView() {
           const st = p.statement;
           const d = (await q(sb.from('debts').select('id, creditor, account_id').eq('status', 'active').ilike('creditor', '%latitude%').limit(1)))[0];
           if (d) {
-            const upd = { current_balance: st.closing, balance_as_at: st.date || today(), account_id: d.account_id || accountId };
+            const upd = { balance_as_at: st.date || today(), account_id: d.account_id || accountId }; if (st.closing != null) upd.current_balance = st.closing;
             if (st.overdue != null) upd.arrears_amount = st.overdue;
             if (st.minPayment != null) { upd.min_payment = st.minPayment; upd.payment_frequency = 'monthly'; }
             if (st.rate != null) upd.interest_rate_pct = st.rate;
             await q(sb.from('debts').update(upd).eq('id', d.id));
-            results.push(`<li><b>${esc(d.creditor)}</b> updated from the statement: owing ${money(st.closing)}${st.overdue != null ? `, overdue ${money(st.overdue)}` : ''}${st.minPayment != null ? `, minimum ${money(st.minPayment)}/month` : ''}${st.rate != null ? `, ${st.rate}%` : ''}${st.due ? `, next due ${esc(fmtDate(st.due))}` : ''}</li>`);
+            results.push(`<li><b>${esc(d.creditor)}</b> updated from the statement:${st.closing != null ? ` owing ${money(st.closing)}` : ''}${st.overdue != null ? `, overdue ${money(st.overdue)}` : ''}${st.minPayment != null ? `, minimum ${money(st.minPayment)}/month` : ''}${st.rate != null ? `, ${st.rate}%` : ''}${st.due ? `, next due ${esc(fmtDate(st.due))}` : ''}</li>`);
           }
         }
         results.push(`<li><b>${esc(j.file.name)}</b> → ${esc(refName('accounts', accountId))}: ${tot.inserted} new, ${tot.duplicates} already there, ${tot.linked_to_bills} matched to bills, ${tot.shared_added} added to shared costs</li>`);
