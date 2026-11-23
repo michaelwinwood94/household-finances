@@ -1,11 +1,11 @@
 import { createClient } from 'https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2/+esm';
-import { SUPABASE_URL, SUPABASE_PUBLISHABLE_KEY } from './config.js?v=202611240445';
-import { parseBankCsv, parseWestpacActivity, parseScannedPdf, parseLatitudeStatement, isLatitudeStatement, splitAccounts, linesFromItems } from './csv.js?v=202611240445';
-import { readPayslip, toLines } from './payslip.js?v=202611240445';
-import { readBill } from './bill.js?v=202611240445';
-import { parseAfterpay, parseDeferit, mergeRows, isKnown, shopKey, bestShopKey, detectBnplPdf, parseBnplPdf, resolveTruncated } from './bnpl.js?v=202611240445';
-import { toast, softDelete, busy, friendlyError, watchOnline, info, wireInfoTips, skeleton, wireInstall, applyPrefs, settingsMenu, prefs, setPref, store } from './ui.js?v=202611240445';
-import { columnChart, hbarChart, lineChart, SERIES, moneyRound, moneyCompact } from './charts.js?v=202611240445';
+import { SUPABASE_URL, SUPABASE_PUBLISHABLE_KEY } from './config.js?v=202611240455';
+import { parseBankCsv, parseWestpacActivity, parseScannedPdf, parseLatitudeStatement, isLatitudeStatement, splitAccounts, linesFromItems } from './csv.js?v=202611240455';
+import { readPayslip, toLines } from './payslip.js?v=202611240455';
+import { readBill } from './bill.js?v=202611240455';
+import { parseAfterpay, parseDeferit, mergeRows, isKnown, shopKey, bestShopKey, detectBnplPdf, parseBnplPdf, resolveTruncated } from './bnpl.js?v=202611240455';
+import { toast, softDelete, busy, friendlyError, watchOnline, info, wireInfoTips, skeleton, wireInstall, applyPrefs, settingsMenu, prefs, setPref, store } from './ui.js?v=202611240455';
+import { columnChart, hbarChart, lineChart, SERIES, moneyRound, moneyCompact } from './charts.js?v=202611240455';
 
 const sb = createClient(SUPABASE_URL, SUPABASE_PUBLISHABLE_KEY);
 const $ = (s, el = document) => el.querySelector(s);
@@ -1087,7 +1087,7 @@ async function importView() {
     return `<span class="chip"><span class="fresh"><span class="fresh-dot ${d == null || d > 14 ? 'stale' : d > 7 ? 'old' : ''}"></span>${esc(a.name)}: ${d == null ? 'no data yet' : 'up to ' + fmtDate(a.last_transaction_date)}</span></span>`; }).join('')}</div>` : '';
   const links = allLinks().slice().sort((a, b) => a.name.localeCompare(b.name));
   const linksHtml = links.length ? `<div class="chips">${links.map(l => `<a class="chip link-chip" href="${esc(l.url)}" target="_blank" rel="noopener noreferrer">Open ${esc(l.name)} ↗</a>`).join('')}</div>` : '';
-  view.innerHTML = `<div class="page-head"><div><h1 class="page-title">Import</h1><p class="hint">Add statements: CommBank or Westpac CSV or PDF, a Latitude loan statement PDF, or an Afterpay / Deferit upcoming-payments PDF.</p></div></div>${freshHtml}${linksHtml}<div class="card"><h2>Choose files</h2>
+  view.innerHTML = `<div class="page-head"><div><h1 class="page-title">Import</h1><p class="hint">Add statements: CommBank or Westpac CSV or PDF, a Latitude loan statement PDF, or an Afterpay / Deferit upcoming-payments PDF.</p></div></div>${freshHtml}${linksHtml}<section class="card"><h2>Choose files</h2>
     <p class="hint">Choose one or more files at once. Each file is matched to an account (or a new one is set up for you), and importing the same dates twice is safe — duplicates are skipped.</p>
     <ul class="hint">
       <li><b>Bank accounts (CommBank, Westpac):</b> a CSV export, the Westpac Account activity PDF, or a page saved as a PDF from the website (CommBank NetBank or Westpac Online Banking).</li>
@@ -1096,12 +1096,12 @@ async function importView() {
       <li>Pictures saved as a PDF are read on this device by text recognition, which takes a few seconds a page.</li>
     </ul>
     <label>Statement files <input type="file" id="i-file" accept=".csv,text/csv,.pdf,application/pdf" multiple></label>
-    <div id="i-preview"></div></div>
-    <section class="card"><div class="sec-head"><div><h2>Scan a bill</h2><p class="hint">A PDF or a photo of a power, water, rates, phone or insurance bill. It reads the biller, amount, due date and billing period — you check them — then adds the bill or updates the one you already have. Read on this device; the file isn't uploaded.</p></div>
-      <label class="button primary" style="margin:0">Choose bill<input type="file" id="b-file" accept="application/pdf,.pdf,image/*" hidden></label></div></section>
-    <section class="card"><div class="sec-head"><div><h2>Scan Afterpay or Deferit</h2><p class="hint">Screenshots or the saved PDF of the portal's upcoming payments page (several at once is fine). It reads each shop, amount and date, fills in the category, and you check before saving. Dropping the PDF into <b>Choose files</b> above works too.</p></div>
-      <div class="row"><button class="small scan-bnpl" data-p="afterpay">Scan Afterpay</button><button class="small scan-bnpl" data-p="deferit">Scan Deferit</button></div></div></section>
-    <div class="card" id="i-history"></div>`;
+    <div id="i-preview"></div></section>
+    <section class="card"><h2>Scan a bill</h2><p class="hint">A PDF or a photo of a power, water, rates, phone or insurance bill. It reads the biller, amount, due date and billing period — you check them — then adds the bill or updates the one you already have. Read on this device; the file isn't uploaded.</p>
+      <label>Bill file <input type="file" id="b-file" accept="application/pdf,.pdf,image/*"></label></section>
+    <section class="card"><h2>Scan Afterpay or Deferit</h2><p class="hint">Screenshots or the saved PDF of the portal's upcoming payments page (several at once is fine). It reads each shop, amount and date, fills in the category, and you check before saving. Dropping the PDF into <b>Choose files</b> above works too.</p>
+      <div class="row"><button class="scan-bnpl" data-p="afterpay">Scan Afterpay</button><button class="scan-bnpl" data-p="deferit">Scan Deferit</button></div></section>
+    <section class="card" id="i-history"></section>`;
   view.querySelectorAll('.scan-bnpl').forEach(b => b.onclick = () => scanBnpl(b.dataset.p, () => show('debts')));
 
   $('#b-file').onchange = async e => {
