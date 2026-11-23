@@ -1,0 +1,12 @@
+Synergy
+Tax invoice
+Account name MR A SAMPLE
+Account number 1234 5678 90
+Issue date 02/11/2026
+Billing period 01/09/2026 to 31/10/2026
+Previous bill $312.40
+Payment received - thank you $312.40 CR
+New charges $298.15
+Total amount due $298.15
+Due date 23 Nov 2026
+Pay by BPAY Biller code 41111 Ref 9876543210

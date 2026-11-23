@@ -392,3 +392,10 @@ dialog.welcome h3 { margin: 1.2rem 0 .2rem; font-size: 1.05rem; }
 .w-row { grid-template-columns: 1fr 1fr auto !important; align-items: end; }
 .w-row .w-x { margin-bottom: .55rem; }
 @media (max-width: 760px) { .w-row { grid-template-columns: 1fr auto !important; } .w-row label:nth-child(2) { grid-column: 1 / 2; } }
+label.button { display: inline-flex; align-items: center; font: inherit; font-weight: 600; padding: .5rem 1rem; border-radius: 9px; border: 1.5px solid var(--brand); cursor: pointer; white-space: nowrap; }
+label.button.primary { background: var(--brand); color: var(--brand-ink); }
+label.button.primary:hover { background: var(--brand-2); }
+label.button:focus-within { outline: 3px solid var(--brand-soft); outline-offset: 2px; }
+.seg-list { display: grid; gap: .35rem; margin: .4rem 0 .8rem; }
+.seg-list label { display: block; font-weight: 400; margin: 0; padding-left: 1.7rem; text-indent: -1.7rem; line-height: 1.45; }
+.seg-list input { width: auto; margin: 0 .5rem 0 0; vertical-align: -2px; }

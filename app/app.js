@@ -1,9 +1,10 @@
 import { createClient } from 'https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2/+esm';
-import { SUPABASE_URL, SUPABASE_PUBLISHABLE_KEY } from './config.js?v=202611230848';
-import { parseBankCsv, parseWestpacActivity, splitAccounts, linesFromItems } from './csv.js?v=202611230848';
-import { readPayslip, toLines } from './payslip.js?v=202611230848';
-import { toast, softDelete, busy, friendlyError, watchOnline, info, wireInfoTips, skeleton, wireInstall, applyPrefs, settingsMenu, prefs, setPref, store } from './ui.js?v=202611230848';
-import { columnChart, hbarChart, lineChart, SERIES, moneyRound, moneyCompact } from './charts.js?v=202611230848';
+import { SUPABASE_URL, SUPABASE_PUBLISHABLE_KEY } from './config.js?v=202611230853';
+import { parseBankCsv, parseWestpacActivity, splitAccounts, linesFromItems } from './csv.js?v=202611230853';
+import { readPayslip, toLines } from './payslip.js?v=202611230853';
+import { readBill } from './bill.js?v=202611230853';
+import { toast, softDelete, busy, friendlyError, watchOnline, info, wireInfoTips, skeleton, wireInstall, applyPrefs, settingsMenu, prefs, setPref, store } from './ui.js?v=202611230853';
+import { columnChart, hbarChart, lineChart, SERIES, moneyRound, moneyCompact } from './charts.js?v=202611230853';
 
 const sb = createClient(SUPABASE_URL, SUPABASE_PUBLISHABLE_KEY);
 const $ = (s, el = document) => el.querySelector(s);
@@ -21,7 +22,7 @@ async function q(promise) {
   if (error) { console.error(error); toast(friendlyError(error), { ms: 7000, kind: 'bad' }); throw error; }
   return data;
 }
-const label = (s) => String(s ?? '').replace(/_/g, ' ').replace(/^\w/, c => c.toUpperCase());
+const label = (s) => s === 'bimonthly' ? 'Every 2 months' : String(s ?? '').replace(/_/g, ' ').replace(/^\w/, c => c.toUpperCase());
 
 // ---------- lookups (accounts, categories, debts) ----------
 const cache = { accounts: [], categories: [], debts: [], settings: null, members: [] };
@@ -46,8 +47,8 @@ const refOptions = {
 };
 const refName = (ref, id) => { if (!id) return '—'; const o = refOptions[ref]().find(([v]) => v === id); return o ? o[1].replace(/ \((income|expense|transfer)\)$/, '') : '—'; };
 
-const FREQ = ['once', 'weekly', 'fortnightly', 'monthly', 'quarterly', 'yearly'];
-const PER_MONTH = { once: 0, weekly: 52 / 12, fortnightly: 26 / 12, monthly: 1, quarterly: 1 / 3, yearly: 1 / 12 };
+const FREQ = ['once', 'weekly', 'fortnightly', 'monthly', 'bimonthly', 'quarterly', 'yearly'];
+const PER_MONTH = { once: 0, weekly: 52 / 12, fortnightly: 26 / 12, monthly: 1, bimonthly: 1 / 2, quarterly: 1 / 3, yearly: 1 / 12 };
 const sum = (rows, fn) => rows.reduce((t, r) => t + Number(fn(r) || 0), 0);
 
 // ---------- table definitions for the add/edit forms ----------
@@ -212,7 +213,7 @@ TABLES.tax_extras = { title: 'Other costs or income', addTitle: 'cost or income'
 };
 
 // Two views of the same bills/income table, with friendlier columns
-const FREQ_WORD = { once: 'once', weekly: 'week', fortnightly: 'fortnight', monthly: 'month', quarterly: 'quarter', yearly: 'year' };
+const FREQ_WORD = { once: 'once', weekly: 'week', fortnightly: 'fortnight', monthly: 'month', bimonthly: '2 months', quarterly: 'quarter', yearly: 'year' };
 TABLES.bills = { ...TABLES.recurring_items, table: 'recurring_items', title: 'Your bills', order: ['next_due'], addTitle: 'bill',
   columns: ['name', 'amount_freq', 'who_month', 'next', 'share'],
   footer: rows => {
@@ -289,8 +290,6 @@ function readSplit(root, name) {
   const out = {}; let t = 0;
   ed.querySelectorAll('input[data-mid]').forEach(i => { const v = Number(i.value || 0); t += v; if (v > 0) out[i.dataset.mid] = v; });
   if (Math.abs(t - 100) >= 0.05) throw new Error(`The split adds up to ${Math.round(t * 100) / 100}% — it needs to be 100%.`);
-  const ids = Object.keys(out);
-  if (ids.length === cache.members.length && ids.every(id => Math.abs(out[id] - 100 / ids.length) < 0.05)) return null; // that's just equal
   return out;
 }
 // Pages that change with the person switch; others show household figures and say so
@@ -1017,6 +1016,68 @@ function openingFor(parsed) {
   return { date: earliest.date, balance: 0 };
 }
 
+// Check a scanned bill, then add it or update the matching bill
+async function billForm(r) {
+  const items = await q(sb.from('recurring_items').select('*').eq('direction', 'out').order('name'));
+  const key = (r.match_text || r.biller || '').toUpperCase(), first = key.split(' ')[0];
+  const match = items.find(i => i.match_text && key.includes(i.match_text.toUpperCase()))
+    || items.find(i => i.match_text && i.match_text.toUpperCase().includes(key) && key.length >= 3)
+    || (first.length >= 3 ? items.find(i => i.name.toUpperCase().includes(first)) : null);
+  const cat = cache.categories.find(c => c.name === r.category);
+  const noteBits = [r.biller_code ? `BPAY biller code ${r.biller_code}` : '', r.ref_last4 ? `ref ending ${r.ref_last4}` : '',
+    r.period_start ? `bill for ${fmtDate(r.period_start)} – ${fmtDate(r.period_end)}` : ''].filter(Boolean).join(', ');
+  return new Promise(resolve => {
+    const dlg = document.createElement('dialog');
+    dlg.innerHTML = `<form method="dialog"><h2>Check this bill</h2>
+      <p class="hint">Read from <b>${esc(r.file || 'the bill')}</b>. Fix anything that's wrong before saving.</p>
+      ${r.notes.length ? `<div class="callout ${r.overdue ? 'bad' : ''}">${r.notes.map(esc).join('<br>')}</div>` : ''}
+      <div class="seg-list">
+        ${match ? `<label class="inline"><input type="radio" name="mode" value="update" checked> Update <b>${esc(match.name)}</b> <span class="hint">(now ${money(match.amount)}, due ${esc(fmtDate(match.next_due))})</span></label>` : ''}
+        <label class="inline"><input type="radio" name="mode" value="new" ${match ? '' : 'checked'}> Add as a new regular bill</label>
+        <label class="inline"><input type="radio" name="mode" value="once"> Just this once (a one-off payment)</label>
+      </div>
+      <div class="formgrid">
+        <label>Biller <input name="name" required value="${esc(match?.name || r.biller || '')}"></label>
+        <label>Amount due <input name="amount" type="number" step="0.01" required value="${esc(r.amount ?? '')}"></label>
+        <label>Due date <input name="next_due" type="date" required value="${esc(r.due_date || '')}"></label>
+        <label>How often <select name="frequency">${FREQ.filter(f => f !== 'once').map(f => `<option value="${f}" ${f === (match?.frequency || r.frequency) ? 'selected' : ''}>${label(f)}</option>`).join('')}</select></label>
+        <label>Category <select name="category_id" data-cat>${catOptions(match?.category_id || cat?.id, { blank: '— none —' })}</select></label>
+        <label>Text on bank statement <span class="hint">to match the payment when you import</span><input name="match_text" value="${esc(match?.match_text || r.match_text || '')}"></label>
+        <div class="full"><div class="field-label">Who pays</div>${splitEditor('split', match ? match.split : (cache.settings?.default_split ?? null))}</div>
+        <label class="full">Notes <textarea name="notes" rows="2">${esc(noteBits)}</textarea></label>
+      </div>
+      <p class="hint">Only the last 4 digits of any reference are kept.</p>
+      <div class="row"><button class="primary" value="save">Save</button><button value="cancel" formnovalidate>Cancel</button></div></form>`;
+    document.body.appendChild(dlg);
+    const f = $('form', dlg);
+    f.querySelectorAll('select[data-cat]').forEach(sel => wireCatSelect(sel, () => {}));
+    wireSplits(f);
+    const freqSel = f.frequency;
+    f.querySelectorAll('input[name=mode]').forEach(x => x.onchange = () => { freqSel.disabled = f.mode.value === 'once'; });
+    f.addEventListener('submit', async e => {
+      if (e.submitter?.value !== 'save') return;
+      e.preventDefault();
+      let split; try { split = readSplit(f, 'split'); } catch (err) { toast(err.message, { kind: 'bad' }); return; }
+      const mode = f.mode.value;
+      const row = { name: f.name.value.trim(), amount: Number(f.amount.value), next_due: f.next_due.value, frequency: mode === 'once' ? 'once' : freqSel.value,
+        category_id: f.category_id.value || null, match_text: f.match_text.value.trim() || null, split, direction: 'out', is_active: true };
+      const note = f.notes.value.trim();
+      try {
+        await busy(e.submitter, async () => {
+          if (mode === 'update' && match) {
+            const notes = [match.notes, note && `[${new Date().toLocaleDateString('en-AU')}: scanned bill — ${note}]`].filter(Boolean).join(' ');
+            await q(sb.from('recurring_items').update({ ...row, notes }).eq('id', match.id));
+          } else await q(sb.from('recurring_items').insert({ ...row, notes: note || null }));
+        });
+        toast(mode === 'update' ? `${row.name} updated: ${money(row.amount)} due ${fmtDate(row.next_due)}` : `${row.name} added: ${money(row.amount)} due ${fmtDate(row.next_due)}`, { ms: 5000 });
+        dlg.close(); resolve(true);
+      } catch { /* toast shown */ }
+    });
+    dlg.addEventListener('close', () => { dlg.remove(); resolve(false); });
+    dlg.showModal();
+  });
+}
+
 async function importView() {
   const fresh = await q(sb.from('v_account_balances').select('name, last_transaction_date').eq('is_active', true));
   const freshHtml = fresh.length ? `<div class="chips">${fresh.map(a => { const d = a.last_transaction_date ? -daysFromToday(a.last_transaction_date) : null;
@@ -1026,7 +1087,20 @@ async function importView() {
     Each file is matched to an account (or a new account is set up for you). Importing the same dates twice is safe — duplicates are skipped.</p>
     <label>Statement files <input type="file" id="i-file" accept=".csv,text/csv,.pdf,application/pdf" multiple></label>
     <div id="i-preview"></div></div>
+    <section class="card"><div class="sec-head"><div><h2>Scan a bill</h2><p class="hint">A PDF or a photo of a power, water, rates, phone or insurance bill. It reads the biller, amount, due date and billing period — you check them — then adds the bill or updates the one you already have. Read on this device; the file isn't uploaded.</p></div>
+      <label class="button primary" style="margin:0">Choose bill<input type="file" id="b-file" accept="application/pdf,.pdf,image/*" hidden></label></div></section>
     <div class="card" id="i-history"></div>`;
+
+  $('#b-file').onchange = async e => {
+    const file = e.target.files[0]; e.target.value = ''; if (!file) return;
+    toast('Reading bill…', { ms: 60000 });
+    try {
+      const lines = await scanPayslipFile(file, (pc, msg) => toast(msg || `Reading bill… ${pc}%`, { ms: 60000 }), 'bill');
+      const r = readBill(lines);
+      toast('Done — check the details', { ms: 2500 });
+      await billForm({ ...r, file: file.name });
+    } catch (err) { toast(err.message || 'Could not read that file', { ms: 6000, kind: 'bad' }); }
+  };
 
   $('#i-file').onchange = async e => {
     const files = [...e.target.files]; if (!files.length) return;
@@ -1709,7 +1783,7 @@ async function ocr(image, progress) {
     return toLines(data.text);
   } finally { await worker.terminate(); }
 }
-async function scanPayslipFile(file, progress) {
+async function scanPayslipFile(file, progress, what = 'payslip') {
   if (/\.pdf$/i.test(file.name) || file.type === 'application/pdf') {
     const pages = await readPdfItems(file);
     let lines = linesFromItems(pages).map(l => l.text);
@@ -1723,7 +1797,7 @@ async function scanPayslipFile(file, progress) {
     return ocr(canvas, progress);
   }
   if (/^image\//.test(file.type) || /\.(jpe?g|png|heic|webp)$/i.test(file.name)) return ocr(file, progress);
-  throw new Error('Choose a PDF or a photo of the payslip.');
+  throw new Error(`Choose a PDF or a photo of the ${what}.`);
 }
 async function scanPayslip(after) {
   const inp = document.createElement('input'); inp.type = 'file'; inp.accept = 'application/pdf,.pdf,image/*';

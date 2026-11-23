@@ -1,0 +1,10 @@
+Harbour Mobile Pty Ltd
+INVOICE
+Bill date 14/11/2026
+Service period 15/10/2026 - 14/11/2026
+Previous balance $65.00
+Overdue amount $65.00
+This bill $65.00
+Total to pay $130.00
+Due by 28/11/2026
+Customer reference number 55500012
