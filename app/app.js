@@ -1,11 +1,11 @@
 import { createClient } from 'https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2/+esm';
-import { SUPABASE_URL, SUPABASE_PUBLISHABLE_KEY } from './config.js?v=202611240455';
-import { parseBankCsv, parseWestpacActivity, parseScannedPdf, parseLatitudeStatement, isLatitudeStatement, splitAccounts, linesFromItems } from './csv.js?v=202611240455';
-import { readPayslip, toLines } from './payslip.js?v=202611240455';
-import { readBill } from './bill.js?v=202611240455';
-import { parseAfterpay, parseDeferit, mergeRows, isKnown, shopKey, bestShopKey, detectBnplPdf, parseBnplPdf, resolveTruncated } from './bnpl.js?v=202611240455';
-import { toast, softDelete, busy, friendlyError, watchOnline, info, wireInfoTips, skeleton, wireInstall, applyPrefs, settingsMenu, prefs, setPref, store } from './ui.js?v=202611240455';
-import { columnChart, hbarChart, lineChart, SERIES, moneyRound, moneyCompact } from './charts.js?v=202611240455';
+import { SUPABASE_URL, SUPABASE_PUBLISHABLE_KEY } from './config.js?v=202611240500';
+import { parseBankCsv, parseWestpacActivity, parseScannedPdf, parseLatitudeStatement, isLatitudeStatement, splitAccounts, linesFromItems } from './csv.js?v=202611240500';
+import { readPayslip, toLines } from './payslip.js?v=202611240500';
+import { readBill } from './bill.js?v=202611240500';
+import { parseAfterpay, parseDeferit, mergeRows, isKnown, shopKey, bestShopKey, detectBnplPdf, parseBnplPdf, resolveTruncated } from './bnpl.js?v=202611240500';
+import { toast, softDelete, busy, friendlyError, watchOnline, info, wireInfoTips, skeleton, wireInstall, applyPrefs, settingsMenu, prefs, setPref, store } from './ui.js?v=202611240500';
+import { columnChart, hbarChart, lineChart, SERIES, moneyRound, moneyCompact } from './charts.js?v=202611240500';
 
 const sb = createClient(SUPABASE_URL, SUPABASE_PUBLISHABLE_KEY);
 const $ = (s, el = document) => el.querySelector(s);
@@ -1085,7 +1085,7 @@ async function importView() {
   const fresh = await q(sb.from('v_account_balances').select('id, name, last_transaction_date').eq('is_active', true));
   const freshHtml = fresh.length ? `<div class="chips">${fresh.map(a => { const d = a.last_transaction_date ? -daysFromToday(a.last_transaction_date) : null;
     return `<span class="chip"><span class="fresh"><span class="fresh-dot ${d == null || d > 14 ? 'stale' : d > 7 ? 'old' : ''}"></span>${esc(a.name)}: ${d == null ? 'no data yet' : 'up to ' + fmtDate(a.last_transaction_date)}</span></span>`; }).join('')}</div>` : '';
-  const links = allLinks().slice().sort((a, b) => a.name.localeCompare(b.name));
+  const links = allLinks().filter(l => !['government', 'help'].includes(l.kind)).sort((a, b) => a.name.localeCompare(b.name));
   const linksHtml = links.length ? `<div class="chips">${links.map(l => `<a class="chip link-chip" href="${esc(l.url)}" target="_blank" rel="noopener noreferrer">Open ${esc(l.name)} ↗</a>`).join('')}</div>` : '';
   view.innerHTML = `<div class="page-head"><div><h1 class="page-title">Import</h1><p class="hint">Add statements: CommBank or Westpac CSV or PDF, a Latitude loan statement PDF, or an Afterpay / Deferit upcoming-payments PDF.</p></div></div>${freshHtml}${linksHtml}<section class="card"><h2>Choose files</h2>
     <p class="hint">Choose one or more files at once. Each file is matched to an account (or a new one is set up for you), and importing the same dates twice is safe — duplicates are skipped.</p>
