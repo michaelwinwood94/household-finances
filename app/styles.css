@@ -475,3 +475,8 @@ label.inline input { margin: 0; width: auto; }
 .progress.sm { height: 5px; margin: .3rem 0 0; }
 .progress > span.bad { background: var(--bad); }
 input.bud { width: 6.5rem; margin: 0; padding: .3rem .45rem; text-align: right; }
+
+dialog.bnpl-dlg { max-width: 860px; }
+table.bnpl input { margin: 0; padding: .3rem .45rem; }
+table.bnpl .b-name { min-width: 11rem; } table.bnpl .b-amt { width: 6rem; text-align: right; } table.bnpl .b-date { min-width: 9.5rem; } table.bnpl select { margin: 0; padding: .3rem .4rem; min-width: 10rem; }
+table.bnpl tr.muted { opacity: .6; }

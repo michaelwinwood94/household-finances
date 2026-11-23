@@ -1,0 +1,2 @@
+-- Applied live: shop_categories(owner_id, shop_key, category_id, updated_at) with own-rows RLS; remembers each shop's category
+-- (shop_key = lowercase letters/digits of the shop name). Seeded from the categorised instalments. Used by Scan Afterpay / Deferit.

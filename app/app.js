@@ -1,10 +1,11 @@
 import { createClient } from 'https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2/+esm';
-import { SUPABASE_URL, SUPABASE_PUBLISHABLE_KEY } from './config.js?v=202611232130';
-import { parseBankCsv, parseWestpacActivity, splitAccounts, linesFromItems } from './csv.js?v=202611232130';
-import { readPayslip, toLines } from './payslip.js?v=202611232130';
-import { readBill } from './bill.js?v=202611232130';
-import { toast, softDelete, busy, friendlyError, watchOnline, info, wireInfoTips, skeleton, wireInstall, applyPrefs, settingsMenu, prefs, setPref, store } from './ui.js?v=202611232130';
-import { columnChart, hbarChart, lineChart, SERIES, moneyRound, moneyCompact } from './charts.js?v=202611232130';
+import { SUPABASE_URL, SUPABASE_PUBLISHABLE_KEY } from './config.js?v=202611232205';
+import { parseBankCsv, parseWestpacActivity, splitAccounts, linesFromItems } from './csv.js?v=202611232205';
+import { readPayslip, toLines } from './payslip.js?v=202611232205';
+import { readBill } from './bill.js?v=202611232205';
+import { parseAfterpay, parseDeferit, mergeRows, isKnown, shopKey, bestShopKey } from './bnpl.js?v=202611232205';
+import { toast, softDelete, busy, friendlyError, watchOnline, info, wireInfoTips, skeleton, wireInstall, applyPrefs, settingsMenu, prefs, setPref, store } from './ui.js?v=202611232205';
+import { columnChart, hbarChart, lineChart, SERIES, moneyRound, moneyCompact } from './charts.js?v=202611232205';
 
 const sb = createClient(SUPABASE_URL, SUPABASE_PUBLISHABLE_KEY);
 const $ = (s, el = document) => el.querySelector(s);
@@ -1091,7 +1092,10 @@ async function importView() {
     <div id="i-preview"></div></div>
     <section class="card"><div class="sec-head"><div><h2>Scan a bill</h2><p class="hint">A PDF or a photo of a power, water, rates, phone or insurance bill. It reads the biller, amount, due date and billing period — you check them — then adds the bill or updates the one you already have. Read on this device; the file isn't uploaded.</p></div>
       <label class="button primary" style="margin:0">Choose bill<input type="file" id="b-file" accept="application/pdf,.pdf,image/*" hidden></label></div></section>
+    <section class="card"><div class="sec-head"><div><h2>Scan Afterpay or Deferit</h2><p class="hint">Screenshots of the portal's upcoming payments list (several at once is fine). It reads each shop, amount and date, fills in the category, and you check before saving.</p></div>
+      <div class="row"><button class="small scan-bnpl" data-p="afterpay">Afterpay</button><button class="small scan-bnpl" data-p="deferit">Deferit</button></div></div></section>
     <div class="card" id="i-history"></div>`;
+  view.querySelectorAll('.scan-bnpl').forEach(b => b.onclick = () => scanBnpl(b.dataset.p, () => show('debts')));
 
   $('#b-file').onchange = async e => {
     const file = e.target.files[0]; e.target.value = ''; if (!file) return;
@@ -1317,15 +1321,17 @@ async function debts() {
     owing.forEach(r => { byCat[r.category_id || ''] = (byCat[r.category_id || ''] || 0) + Number(r.amount); const k = r.debt_id + '|' + r.merchant; (mer[k] ||= { debt_id: r.debt_id, merchant: r.merchant, category_id: r.category_id, owing: 0 }).owing += Number(r.amount); });
     const merchants = Object.values(mer).sort((a, b) => b.owing - a.owing);
     const in30 = sum(owing.filter(r => r.due_date <= new Date(Date.now() + 30 * 864e5).toLocaleDateString('en-CA')), r => Number(r.amount));
-    box.innerHTML = `<div class="sec-head"><div><h2>Instalments still to pay</h2><p class="hint">${owing.length} left · ${money(sum(owing, r => Number(r.amount)))} in total · ${money(in30)} in the next 30 days. Tick one when it's paid; the debt balance follows.</p></div></div>
+    box.innerHTML = `<div class="sec-head"><div><h2>Instalments still to pay</h2><p class="hint">${owing.length} left · ${money(sum(owing, r => Number(r.amount)))} in total · ${money(in30)} in the next 30 days. Tick one when it's paid; the debt balance follows.</p></div><div class="row"><button class="small scan-bnpl" data-p="afterpay">Scan Afterpay</button><button class="small scan-bnpl" data-p="deferit">Scan Deferit</button></div></div>
       <h3>What it was spent on</h3><div id="d-inst-cat"></div>
       <details class="fold"><summary><span class="hint">Change a shop's category</span></summary><div class="tablewrap"><table class="list"><tbody>${merchants.map(m => `<tr><td>${esc(m.merchant)} <span class="hint">${esc(names[m.debt_id] || '')}</span></td><td class="num">${money(m.owing)}</td><td><select class="inst-cat" data-debt="${m.debt_id}" data-merchant="${esc(m.merchant)}" aria-label="Category for ${esc(m.merchant)}">${catOptions(m.category_id, { blank: '— choose —' })}</select></td></tr>`).join('')}</tbody></table></div></details>
       <h3>Due dates</h3>` +
       Object.entries(days).map(([d, list], i) => `<details ${i < 2 ? 'open' : ''}><summary><strong>${esc(shortDate(d))}</strong> · ${money(sum(list.filter(r => !r.is_paid), r => Number(r.amount)))} · ${list.length} payment${list.length === 1 ? '' : 's'}</summary>
         <table class="rpt-tbl"><tbody>${list.map(r => `<tr><td><label><input type="checkbox" class="inst-paid" data-id="${r.id}" data-debt="${r.debt_id}" ${r.is_paid ? 'checked' : ''}> ${esc(r.merchant)}${r.auto_matched ? ' <span class="tag" title="Matched to a bank payment. Untick to undo.">auto-matched</span>' : ''}</label></td><td class="num">${money(r.amount)}</td></tr>`).join('')}</tbody></table></details>`).join('');
     hbarChart($('#d-inst-cat'), { items: Object.entries(byCat).map(([id, v]) => ({ label: id ? (cache.categories.find(c => c.id === id)?.name || 'Other') : 'Not categorised', value: v })).sort((a, b) => b.value - a.value), color: SERIES.orange, empty: 'Nothing owing.' });
+    box.querySelectorAll('.scan-bnpl').forEach(b => b.onclick = () => scanBnpl(b.dataset.p, instalments));
     box.querySelectorAll('.inst-cat').forEach(sel => sel.onchange = async () => {
       await q(sb.from('debt_instalments').update({ category_id: sel.value || null }).eq('debt_id', sel.dataset.debt).eq('merchant', sel.dataset.merchant));
+      if (sel.value) await q(sb.from('shop_categories').upsert({ owner_id: session.user.id, shop_key: shopKey(sel.dataset.merchant), category_id: sel.value, updated_at: new Date().toISOString() }, { onConflict: 'owner_id,shop_key' }));
       toast('Category saved'); await instalments();
     });
     box.querySelectorAll('.inst-paid').forEach(c => c.onchange = async () => {
@@ -1483,6 +1489,101 @@ async function goals() {
     if (g) await q(sb.from('goals').update({ target_date: i.value || null, target_amount: Math.max(num(g.target_amount), owing) }).eq('id', g.id));
     else await q(sb.from('goals').insert({ name: `Clear arrears — ${d.creditor}`, goal_type: 'catch_up', debt_id: d.id, target_amount: owing, target_date: i.value || null, priority: d.priority }));
     toast('Saved'); goals();
+  });
+}
+
+
+// ---------- SCAN AFTERPAY / DEFERIT SCREENSHOTS ----------
+// The portal's list is read in two screen regions (shop text, and amounts or dates) so the OCR keeps each value with its row.
+const BNPL_REGIONS = { afterpay: { a: [.17, .03, .68, 1], b: [.66, .03, 1, 1] }, deferit: { a: [.22, .12, .72, 1], b: [.04, .12, .23, 1] } };
+const flatLines = d => d.lines || (d.blocks || []).flatMap(b => (b.paragraphs || []).flatMap(p => p.lines || []));
+const flatWords = d => d.words || flatLines(d).flatMap(l => l.words || []);
+const ocrBox = o => ({ text: String(o.text || '').trim(), y0: o.bbox.y0, y1: o.bbox.y1 });
+async function readBnplImage(file, provider, progress) {
+  const T = await loadTesseract();
+  const bmp = await createImageBitmap(file); const { width: W, height: H } = bmp; bmp.close?.();
+  const R = BNPL_REGIONS[provider];
+  const rect = ([x0, y0, x1, y1]) => ({ left: Math.round(W * x0), top: Math.round(H * y0), width: Math.round(W * (x1 - x0)), height: Math.round(H * (y1 - y0)) });
+  const worker = await T.createWorker('eng', 1, { logger: m => m.status === 'recognizing text' && progress(Math.round(m.progress * 100)) });
+  try {
+    await worker.setParameters({ tessedit_pageseg_mode: '6' });
+    const a = (await worker.recognize(file, { rectangle: rect(R.a) })).data;
+    if (provider === 'afterpay') await worker.setParameters({ tessedit_pageseg_mode: '11' });
+    const b = (await worker.recognize(file, { rectangle: rect(R.b) })).data;
+    return provider === 'afterpay' ? parseAfterpay({ text: flatLines(a).map(ocrBox), amounts: flatWords(b).map(ocrBox) })
+      : parseDeferit({ main: flatLines(a).map(ocrBox), dates: flatLines(b).map(ocrBox) }, today());
+  } finally { await worker.terminate(); }
+}
+async function scanBnpl(provider, after) {
+  const label = provider === 'afterpay' ? 'Afterpay' : 'Deferit';
+  const debt = cache.debts.find(d => d.status === 'active' && new RegExp(provider, 'i').test(d.creditor));
+  if (!debt) { toast(`Add ${label} under Debts first.`, 5000); return; }
+  const inp = document.createElement('input'); inp.type = 'file'; inp.accept = 'image/*'; inp.multiple = true;
+  inp.onchange = async () => {
+    const files = [...inp.files]; if (!files.length) return;
+    try {
+      let rows = [];
+      for (let i = 0; i < files.length; i++) {
+        const tag = files.length > 1 ? ` ${i + 1} of ${files.length}` : '';
+        toast(`Reading screenshot${tag}…`, 90000);
+        rows = rows.concat(await readBnplImage(files[i], provider, p => toast(`Reading screenshot${tag}… ${p}%`, 90000)));
+      }
+      rows = mergeRows(rows);
+      if (!rows.length) { toast(`Couldn't find any payments. Use a screenshot of the ${label} upcoming payments list.`, 7000); return; }
+      toast('Done — check each row', 2500);
+      if (await bnplReview(debt, provider, rows)) after();
+    } catch (e) { toast(e.message || 'Could not read that image', 6000); }
+  };
+  inp.click();
+}
+async function bnplReview(debt, provider, rows) {
+  const [existing, shops] = await Promise.all([
+    q(sb.from('debt_instalments').select('merchant, due_date, amount').eq('debt_id', debt.id).limit(3000)),
+    q(sb.from('shop_categories').select('shop_key, category_id')),
+  ]);
+  const known = new Map(shops.map(s => [s.shop_key, s.category_id])), keys = [...known.keys()];
+  const items = rows.map(r => {
+    const dup = r.amount != null && !!r.due_date && isKnown(r, existing), k = bestShopKey(r.merchant, keys);
+    return { ...r, dup, cat: k ? known.get(k) : '', on: !dup && !r.is_fee && r.amount != null && !!r.due_date };
+  });
+  const guessed = items.some(r => r.date_guessed);
+  return new Promise(resolve => {
+    const dlg = document.createElement('dialog'); dlg.className = 'bnpl-dlg';
+    dlg.innerHTML = `<h2>Check what was read</h2>
+      <p class="hint">${items.length} payment${items.length === 1 ? '' : 's'} found for ${esc(debt.creditor)}. Tick the ones to add; fix anything misread. Rows already in your list are unticked.${guessed ? ' The month was worked out from the order of the list — check the dates.' : ''}</p>
+      <div class="tablewrap"><table class="list bnpl"><thead><tr><th></th><th>Shop</th><th>Due</th><th class="num">Amount</th><th>Category</th></tr></thead><tbody>
+      ${items.map((r, i) => `<tr data-i="${i}" class="${r.on ? '' : 'muted'}"><td><input type="checkbox" class="b-on" ${r.on ? 'checked' : ''} aria-label="Add this payment"></td>
+        <td data-label="Shop"><input class="b-name" value="${esc(r.merchant)}" aria-label="Shop">${r.instalment_no ? `<span class="hint">${r.instalment_no} of ${r.instalments_total}</span>` : ''}${r.dup ? ' <span class="tag">already in list</span>' : ''}${r.is_fee ? ' <span class="tag">fee</span>' : ''}</td>
+        <td data-label="Due"><input type="date" class="b-date" value="${esc(r.due_date || '')}" aria-label="Due date"></td>
+        <td class="num" data-label="Amount"><input type="number" step="0.01" min="0" class="b-amt" value="${r.amount ?? ''}" aria-label="Amount"></td>
+        <td data-label="Category"><select class="b-cat" aria-label="Category">${catOptions(r.cat, { blank: '— choose —' })}</select></td></tr>`).join('')}</tbody></table></div>
+      <p class="msg" id="b-msg" role="status"></p>
+      <div class="row"><button class="primary" id="b-save">Add</button><button type="button" id="b-cancel">Cancel</button></div>`;
+    document.body.appendChild(dlg);
+    const trs = [...dlg.querySelectorAll('tbody tr')];
+    const count = () => { const n = trs.filter(tr => $('.b-on', tr).checked).length; $('#b-save', dlg).textContent = n ? `Add ${n} payment${n === 1 ? '' : 's'}` : 'Add'; $('#b-save', dlg).disabled = !n; };
+    trs.forEach(tr => { $('.b-on', tr).onchange = () => { tr.classList.toggle('muted', !$('.b-on', tr).checked); count(); }; });
+    count();
+    $('#b-cancel', dlg).onclick = () => dlg.close();
+    $('#b-save', dlg).onclick = async e => {
+      const chosen = trs.filter(tr => $('.b-on', tr).checked).map(tr => { const r = items[tr.dataset.i]; return { debt_id: debt.id, merchant: $('.b-name', tr).value.trim(), due_date: $('.b-date', tr).value, amount: Number($('.b-amt', tr).value),
+        instalment_no: r.instalment_no, instalments_total: r.instalments_total, category_id: $('.b-cat', tr).value || null }; });
+      const bad = chosen.find(r => !r.merchant || !r.due_date || !(r.amount > 0));
+      if (bad) { const m = $('#b-msg', dlg); m.className = 'msg error'; m.textContent = 'Every ticked row needs a shop, a due date and an amount.'; return; }
+      try {
+        await busy(e.currentTarget, async () => {
+          await q(sb.from('debt_instalments').insert(chosen));
+          const remembered = Object.values(Object.fromEntries(chosen.filter(r => r.category_id).map(r => [shopKey(r.merchant), { owner_id: session.user.id, shop_key: shopKey(r.merchant), category_id: r.category_id, updated_at: new Date().toISOString() }])));
+          if (remembered.length) await q(sb.from('shop_categories').upsert(remembered, { onConflict: 'owner_id,shop_key' }));
+          const left = await q(sb.from('debt_instalments').select('amount').eq('debt_id', debt.id).eq('is_paid', false));
+          await q(sb.from('debts').update({ current_balance: sum(left, r => Number(r.amount)), balance_as_at: today() }).eq('id', debt.id));
+          try { await sb.rpc('match_instalments', { p_owner: session.user.id }); } catch { /* runs again every morning */ }
+        });
+        toast(`Added ${chosen.length} payment${chosen.length === 1 ? '' : 's'} ✓`); dlg.close(); resolve(true);
+      } catch { /* toast already shown; keep the dialog open */ }
+    };
+    dlg.addEventListener('close', () => { dlg.remove(); resolve(false); });
+    dlg.showModal();
   });
 }
 
