@@ -1,10 +1,10 @@
 import { createClient } from 'https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2/+esm';
-import { SUPABASE_URL, SUPABASE_PUBLISHABLE_KEY } from './config.js?v=202611230957';
-import { parseBankCsv, parseWestpacActivity, splitAccounts, linesFromItems } from './csv.js?v=202611230957';
-import { readPayslip, toLines } from './payslip.js?v=202611230957';
-import { readBill } from './bill.js?v=202611230957';
-import { toast, softDelete, busy, friendlyError, watchOnline, info, wireInfoTips, skeleton, wireInstall, applyPrefs, settingsMenu, prefs, setPref, store } from './ui.js?v=202611230957';
-import { columnChart, hbarChart, lineChart, SERIES, moneyRound, moneyCompact } from './charts.js?v=202611230957';
+import { SUPABASE_URL, SUPABASE_PUBLISHABLE_KEY } from './config.js?v=202611231319';
+import { parseBankCsv, parseWestpacActivity, splitAccounts, linesFromItems } from './csv.js?v=202611231319';
+import { readPayslip, toLines } from './payslip.js?v=202611231319';
+import { readBill } from './bill.js?v=202611231319';
+import { toast, softDelete, busy, friendlyError, watchOnline, info, wireInfoTips, skeleton, wireInstall, applyPrefs, settingsMenu, prefs, setPref, store } from './ui.js?v=202611231319';
+import { columnChart, hbarChart, lineChart, SERIES, moneyRound, moneyCompact } from './charts.js?v=202611231319';
 
 const sb = createClient(SUPABASE_URL, SUPABASE_PUBLISHABLE_KEY);
 const $ = (s, el = document) => el.querySelector(s);
@@ -1079,9 +1079,9 @@ async function billForm(r) {
 }
 
 async function importView() {
-  const fresh = await q(sb.from('v_account_balances').select('name, last_transaction_date').eq('is_active', true));
+  const fresh = await q(sb.from('v_account_balances').select('id, name, last_transaction_date').eq('is_active', true));
   const freshHtml = fresh.length ? `<div class="chips">${fresh.map(a => { const d = a.last_transaction_date ? -daysFromToday(a.last_transaction_date) : null;
-    return `<span class="chip"><span class="fresh"><span class="fresh-dot ${d == null || d > 14 ? 'stale' : d > 7 ? 'old' : ''}"></span>${esc(a.name)}: ${d == null ? 'no data yet' : 'up to ' + fmtDate(a.last_transaction_date)}</span></span>`; }).join('')}</div>` : '';
+    return `<span class="chip"><span class="fresh"><span class="fresh-dot ${d == null || d > 14 ? 'stale' : d > 7 ? 'old' : ''}"></span>${esc(a.name)}: ${d == null ? 'no data yet' : 'up to ' + fmtDate(a.last_transaction_date)}</span></span>${(l => l ? `<a class="chip link-chip" href="${esc(l.url)}" target="_blank" rel="noopener noreferrer">Open ${esc(l.name)} ↗</a>` : '')(linkFor({ account_id: a.id }))}`; }).join('')}</div>` : '';
   view.innerHTML = `<div class="page-head"><div><h1 class="page-title">Import</h1><p class="hint">Add bank statements: CommBank or Westpac CSV, or the Westpac Account activity PDF.</p></div></div>${freshHtml}<div class="card"><h2>Choose files</h2>
     <p class="hint">Choose one or more files at once: <b>CSV</b> exports from CommBank or Westpac, or the <b>Account activity PDF</b> from the Westpac app.
     Each file is matched to an account (or a new account is set up for you). Importing the same dates twice is safe — duplicates are skipped.</p>
@@ -1327,7 +1327,7 @@ async function debts() {
       rowFilter: r => shareFor(r.split) > 0,
       subtitle: personView === 'all' ? '' : 'Balances in this list are the full amounts; the tiles and chart above show ' + esc(personName()) + "'s share.",
       onChange: async () => { await top(); await list(); },
-      extra: (r, i) => `<button class="small log" data-i="${i}">Calls</button>`,
+      extra: (r, i) => `<button class="small log" data-i="${i}">Calls</button>${(l => l ? `<a class="button small" href="${esc(l.url)}" target="_blank" rel="noopener noreferrer" title="${esc(l.name)}">Website ↗</a>` : '')(linkFor({ debt_id: r.id }))}`,
     });
     $('#d-list').querySelectorAll('.log').forEach(b => b.onclick = () => showLog(current[b.dataset.i]));
   };
@@ -2143,6 +2143,7 @@ async function reportView() {
     e.preventDefault();
     const out = {}; for (const [k] of RPT_QUESTIONS) out[k] = e.target[k].value.trim();
     for (const k of ['extra_food_weekly', 'extra_other_weekly']) out[k] = e.target[k].value === '' ? null : Number(e.target[k].value);
+    Object.assign(out, { links: cache.settings?.report?.links || [] });
     await busy(e.submitter, () => q(sb.from('settings').update({ report: out }).eq('owner_id', session.user.id)));
     cache.settings.report = out; toast('Answers saved'); reportView();
   };
@@ -2264,6 +2265,104 @@ function centrelinkSettings(m) {
   });
 }
 
+// ---------- LINKS (bank, debt and bill websites in one place; stored with the household's settings) ----------
+const LINK_KINDS = { bank: 'Banks — download statements', debt: 'Debts — check balances', bill: 'Bills & utilities', government: 'Government', help: 'Free help', other: 'Other' };
+const LINK_SUGGESTIONS = [
+  { name: 'CommBank (NetBank)', url: 'https://www.commbank.com.au/', kind: 'bank', match: /commbank/i, notes: 'Log on → choose the account → Export → CSV, then Import here.' },
+  { name: 'Westpac Online Banking', url: 'https://www.westpac.com.au/', kind: 'bank', match: /westpac choice|westpac/i, notes: 'Log on → the account → Export / Download transactions as CSV (home loans too).' },
+  { name: 'Afterpay', url: 'https://www.afterpay.com/', kind: 'debt', match: /afterpay/i, notes: 'Check the total still owing, then press Update balance.' },
+  { name: 'Deferit', url: 'https://www.deferit.com/', kind: 'debt', match: /deferit/i, notes: 'Check what’s left to pay, then Update balance.' },
+  { name: 'Latitude', url: 'https://www.latitudefinancial.com.au/', kind: 'debt', match: /latitude/i, notes: 'Log on to see the balance owing.' },
+  { name: 'Zip', url: 'https://zip.co/au', kind: 'debt', match: /\bzip\b/i, notes: '' },
+  { name: 'Synergy', url: 'https://www.synergy.net.au/', kind: 'bill', match: /synergy/i, notes: 'Check the balance and any payment plan.' },
+  { name: 'Water Corporation', url: 'https://www.watercorporation.com.au/', kind: 'bill', match: /water corp/i, notes: '' },
+  { name: 'myGov (Centrelink)', url: 'https://my.gov.au/', kind: 'government', notes: 'Report income: Centrelink → Manage Income and Assets.' },
+  { name: 'National Debt Helpline', url: 'https://ndh.org.au/', kind: 'help', notes: 'Free financial counselling: 1800 007 007 (Mon–Fri).' },
+];
+const allLinks = () => (cache.settings?.report?.links || []);
+async function saveLinks(list) {
+  const report = { ...(cache.settings?.report || {}), links: list };
+  await q(sb.from('settings').update({ report }).eq('owner_id', session.user.id));
+  cache.settings.report = report;
+}
+const linkFor = ({ account_id, debt_id }) => allLinks().find(l => (account_id && l.account_id === account_id) || (debt_id && l.debt_id === debt_id));
+const hostOf = u => { try { return new URL(u).hostname.replace(/^www\./, ''); } catch { return u; } };
+function linkForm(row = null) {
+  return new Promise(resolve => {
+    const dlg = document.createElement('dialog'); const r = row || { kind: 'bank' };
+    dlg.innerHTML = `<form method="dialog"><h2>${row ? 'Edit' : 'Add'} link</h2><div class="formgrid">
+      <label>Name <input name="name" required value="${esc(r.name || '')}" placeholder="e.g. Afterpay"></label>
+      <label>Web address <span class="hint">must start with https://</span><input name="url" type="url" required pattern="https://.*" value="${esc(r.url || 'https://')}"></label>
+      <label>Type <select name="kind">${Object.entries(LINK_KINDS).map(([k, v]) => `<option value="${k}" ${r.kind === k ? 'selected' : ''}>${esc(v.split(' —')[0])}</option>`).join('')}</select></label>
+      <label>Linked bank account <select name="account_id"><option value="">— none —</option>${cache.accounts.map(a => `<option value="${a.id}" ${r.account_id === a.id ? 'selected' : ''}>${esc(a.name)}</option>`).join('')}</select></label>
+      <label>Linked debt <select name="debt_id"><option value="">— none —</option>${cache.debts.map(d => `<option value="${d.id}" ${r.debt_id === d.id ? 'selected' : ''}>${esc(d.creditor)}</option>`).join('')}</select></label>
+      <label class="full">Notes <span class="hint">e.g. where the CSV export is</span><textarea name="notes" rows="2">${esc(r.notes || '')}</textarea></label></div>
+      <p class="hint">Never save passwords here. Always check the address bar shows the real website before logging in.</p>
+      <div class="row"><button class="primary" value="save">Save</button><button value="cancel" formnovalidate>Cancel</button></div></form>`;
+    document.body.appendChild(dlg);
+    const f = $('form', dlg);
+    f.addEventListener('submit', async e => {
+      if (e.submitter?.value !== 'save') return;
+      e.preventDefault();
+      const item = { id: r.id || (crypto.randomUUID ? crypto.randomUUID() : String(Date.now())), name: f.name.value.trim(), url: f.url.value.trim(), kind: f.kind.value,
+        account_id: f.account_id.value || null, debt_id: f.debt_id.value || null, notes: f.notes.value.trim() || null };
+      if (!/^https:\/\//i.test(item.url)) { toast('The address must start with https://', { kind: 'bad' }); return; }
+      const list = allLinks().filter(x => x.id !== item.id); list.push(item);
+      await busy(e.submitter, () => saveLinks(list));
+      toast('Link saved'); dlg.close(); resolve(true);
+    });
+    dlg.addEventListener('close', () => { dlg.remove(); resolve(false); });
+    dlg.showModal();
+  });
+}
+async function linksView() {
+  await loadLookups();
+  const [bal, debtRows] = await Promise.all([
+    q(sb.from('v_account_balances').select('id, name, last_transaction_date')),
+    q(sb.from('debts').select('*').order('creditor')),
+  ]);
+  const links = allLinks();
+  const sugg = LINK_SUGGESTIONS.filter(sg => !links.some(l => hostOf(l.url) === hostOf(sg.url)));
+  const card = l => {
+    const acc = l.account_id && bal.find(a => a.id === l.account_id), debt = l.debt_id && debtRows.find(d => d.id === l.debt_id);
+    const age = acc?.last_transaction_date ? -daysFromToday(acc.last_transaction_date) : null;
+    return `<div class="link-card">
+      <div class="link-main"><a class="link-open" href="${esc(l.url)}" target="_blank" rel="noopener noreferrer">${esc(l.name)} <span aria-hidden="true">↗</span></a>
+        <div class="hint">${esc(hostOf(l.url))}</div>
+        ${acc ? `<div class="link-status"><span class="fresh-dot ${age == null || age > 14 ? 'stale' : age > 7 ? 'old' : ''}"></span>${esc(acc.name)}: ${age == null ? 'no data yet' : age <= 0 ? 'up to date' : `last transaction ${age} day${age === 1 ? '' : 's'} ago`}</div>` : ''}
+        ${debt ? `<div class="link-status">${esc(debt.creditor)}: <b>${money(debt.current_balance)}</b>${debt.balance_as_at ? ` <span class="hint">as at ${esc(fmtDate(debt.balance_as_at))}</span>` : ''}${Number(debt.arrears_amount) ? ` · <span class="neg">${money(debt.arrears_amount)} overdue</span>` : ''}</div>` : ''}
+        ${l.notes ? `<p class="hint">${esc(l.notes)}</p>` : ''}</div>
+      <div class="link-actions">
+        <a class="button primary small" href="${esc(l.url)}" target="_blank" rel="noopener noreferrer">Open</a>
+        ${acc ? `<button class="small" data-go="import">Import CSV</button>` : ''}
+        ${debt ? `<button class="small l-upd" data-debt="${debt.id}">Update balance</button>` : ''}
+        <button class="small l-edit" data-id="${esc(l.id)}">Edit</button><button class="small ghost l-del" data-id="${esc(l.id)}" aria-label="Remove ${esc(l.name)}">✕</button></div></div>`; };
+  view.innerHTML = `<div class="page-head"><div><h1 class="page-title">Links</h1>
+      <p class="hint">Your banks, debts and bills in one place: open the site, download a CSV or check a balance, then import or update it here.</p></div>
+      <button class="primary" id="l-add">+ Add link</button></div>
+    ${links.length ? '' : '<section class="card"><p>No links yet. Add the suggested ones below with one tap, or add your own.</p></section>'}
+    ${Object.entries(LINK_KINDS).map(([k, title]) => { const ls = links.filter(l => l.kind === k).sort((a, b) => a.name.localeCompare(b.name));
+      return ls.length ? `<section class="card"><h2>${esc(title)}</h2><div class="link-grid">${ls.map(card).join('')}</div></section>` : ''; }).join('')}
+    ${sugg.length ? `<section class="card"><h2>Suggested</h2><p class="hint">Common Australian sites. Adding one links it to the matching account or debt automatically.</p>
+      <div class="chips">${sugg.map((sg, i) => `<button class="chip l-sugg" data-i="${i}">+ ${esc(sg.name)}</button>`).join('')}</div>
+      <div class="row" style="margin-top:.6rem"><button class="small" id="l-sugg-all">Add all suggested</button></div></section>` : ''}
+    <p class="hint">Links open in a new tab. Passwords are never stored in this app.</p>`;
+  const fromSugg = sg => ({ id: crypto.randomUUID ? crypto.randomUUID() : String(Math.random()), name: sg.name, url: sg.url, kind: sg.kind, notes: sg.notes || null,
+    account_id: sg.kind === 'bank' && sg.match ? (cache.accounts.find(a => sg.match.test(a.name) && !['mortgage', 'loan'].includes(a.account_type))?.id || null) : null,
+    debt_id: sg.match && sg.kind !== 'bank' ? (debtRows.find(d => sg.match.test(d.creditor))?.id || null) : null });
+  $('#l-add').onclick = async () => { if (await linkForm()) linksView(); };
+  view.querySelectorAll('.l-sugg').forEach(b => b.onclick = async () => { await saveLinks([...allLinks(), fromSugg(sugg[b.dataset.i])]); toast(`${sugg[b.dataset.i].name} added`); linksView(); });
+  $('#l-sugg-all')?.addEventListener('click', async e => { await busy(e.target, () => saveLinks([...allLinks(), ...sugg.map(fromSugg)])); toast(`${sugg.length} links added`); linksView(); });
+  view.querySelectorAll('.l-edit').forEach(b => b.onclick = async () => { if (await linkForm(allLinks().find(l => l.id === b.dataset.id))) linksView(); });
+  view.querySelectorAll('.l-del').forEach(b => b.onclick = async () => {
+    const before = allLinks(), gone = before.find(l => l.id === b.dataset.id);
+    await saveLinks(before.filter(l => l.id !== b.dataset.id)); linksView();
+    toast(`${gone.name} removed`, { action: 'Undo', onAction: async () => { await saveLinks(before); linksView(); } });
+  });
+  view.querySelectorAll('.l-upd').forEach(b => b.onclick = async () => { if (await openForm('debts', debtRows.find(d => d.id === b.dataset.debt))) linksView(); });
+  view.querySelectorAll('[data-go]').forEach(b => b.onclick = () => show(b.dataset.go));
+}
+
 // ---------- HOUSEHOLD MEMBERS (people inside this login) ----------
 TABLES.household_members = { title: 'People in the household', addTitle: 'person', order: ['sort_order'],
   fields: [
@@ -2373,7 +2472,7 @@ async function setup() {
 }
 
 // ---------- navigation & auth ----------
-const VIEWS = { dashboard, insights: insightsView, members: membersView, report: reportView, budget, bills, income, debts, transactions, sort: sortView, import: importView, shared, pay: payView, tax: taxView, setup };
+const VIEWS = { dashboard, insights: insightsView, members: membersView, report: reportView, links: linksView, budget, bills, income, debts, transactions, sort: sortView, import: importView, shared, pay: payView, tax: taxView, setup };
 async function updateSortBadge() {
   const { count } = await sb.from('transactions').select('id', { count: 'exact', head: true }).is('category_id', null);
   for (const id of ['#sort-badge', '#sort-badge-m']) { const b = $(id); if (b) { b.textContent = count || ''; b.classList.toggle('hidden', !count); } }
