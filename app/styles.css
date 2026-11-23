@@ -428,3 +428,20 @@ tr.grp td { padding-top: .7rem; } tr.sub td:first-child { padding-left: 1.4rem; 
 .section-divider { margin: 2rem 0 .8rem; padding-top: 1.2rem; border-top: 2px solid var(--line); font-size: 1.25rem; }
 .section-divider .hint { font-weight: 400; font-size: .95rem; }
 @media print { .section-divider, .section-divider ~ section { display: none !important; } }
+/* Centrelink estimate */
+.cl-tiles { margin-bottom: .8rem; }
+.cl-meter { position: relative; height: 22px; border-radius: 11px; background: var(--line); overflow: visible; margin: 1.6rem 0 .35rem; }
+.cl-zone { position: absolute; top: 0; bottom: 0; }
+.cl-zone.free { left: 0; background: var(--good-bg); border-radius: 11px 0 0 11px; }
+.cl-zone.taper { background: var(--warn-bg); border-radius: 0 11px 11px 0; }
+.cl-fill { position: absolute; left: 0; top: 4px; bottom: 4px; border-radius: 7px; }
+.cl-fill.ok { background: var(--good); } .cl-fill.taper { background: #c98a00; } .cl-fill.over { background: var(--bad); }
+.cl-mark { position: absolute; top: -6px; bottom: -6px; width: 2px; background: var(--ink); }
+.cl-mark span { position: absolute; bottom: 100%; left: 50%; transform: translateX(-50%); white-space: nowrap; font-size: .8rem; font-weight: 700; padding-bottom: 2px; }
+.cl-scale { display: flex; justify-content: space-between; gap: .5rem; font-size: .78rem; color: var(--muted); margin-bottom: .9rem; }
+.cl-scale span:nth-child(2) { text-align: center; }
+.cl-break { margin-bottom: .4rem; }
+.cl-whatif { border: 1px solid var(--line); border-radius: 10px; padding: .7rem .9rem; margin: .8rem 0; background: var(--card); }
+.cl-whatif input[type=range] { width: 100%; margin: .4rem 0; accent-color: var(--brand); }
+.cl-out { font-variant-numeric: tabular-nums; }
+@media (max-width: 760px) { .cl-scale span:nth-child(2) { display: none; } }

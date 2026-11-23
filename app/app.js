@@ -1,10 +1,10 @@
 import { createClient } from 'https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2/+esm';
-import { SUPABASE_URL, SUPABASE_PUBLISHABLE_KEY } from './config.js?v=202611230946';
-import { parseBankCsv, parseWestpacActivity, splitAccounts, linesFromItems } from './csv.js?v=202611230946';
-import { readPayslip, toLines } from './payslip.js?v=202611230946';
-import { readBill } from './bill.js?v=202611230946';
-import { toast, softDelete, busy, friendlyError, watchOnline, info, wireInfoTips, skeleton, wireInstall, applyPrefs, settingsMenu, prefs, setPref, store } from './ui.js?v=202611230946';
-import { columnChart, hbarChart, lineChart, SERIES, moneyRound, moneyCompact } from './charts.js?v=202611230946';
+import { SUPABASE_URL, SUPABASE_PUBLISHABLE_KEY } from './config.js?v=202611230957';
+import { parseBankCsv, parseWestpacActivity, splitAccounts, linesFromItems } from './csv.js?v=202611230957';
+import { readPayslip, toLines } from './payslip.js?v=202611230957';
+import { readBill } from './bill.js?v=202611230957';
+import { toast, softDelete, busy, friendlyError, watchOnline, info, wireInfoTips, skeleton, wireInstall, applyPrefs, settingsMenu, prefs, setPref, store } from './ui.js?v=202611230957';
+import { columnChart, hbarChart, lineChart, SERIES, moneyRound, moneyCompact } from './charts.js?v=202611230957';
 
 const sb = createClient(SUPABASE_URL, SUPABASE_PUBLISHABLE_KEY);
 const $ = (s, el = document) => el.querySelector(s);
@@ -1237,6 +1237,7 @@ async function recurringPage(kind) {
       <section class="card"><div class="sec-head"><div><h2>${isBills ? 'Due' : 'Expected'} in the next 5 weeks</h2><p class="hint">${esc(possessive)} amounts</p></div></div><div id="r-up"></div></section>
       <section class="card"><div class="sec-head"><div><h2>Per month</h2><p class="hint">${esc(possessive)} ${isBills ? 'bills' : 'income'} by source</p></div></div><div id="r-chart"></div></section>
     </div>
+    ${isBills ? '' : '<div id="r-cl"></div>'}
     <section class="card" id="r-list"></section>`;
 
 
@@ -1290,7 +1291,7 @@ async function recurringPage(kind) {
     });
     $('#r-list').querySelectorAll('.b-paid').forEach(b => b.onclick = () => { const r = rows[b.dataset.i]; markPaid(r.id, r.next_due, () => recurringPage(kind)); });
   };
-  await Promise.all([drawTop(), drawList()]);
+  await Promise.all([drawTop(), drawList(), isBills ? null : renderCentrelink($('#r-cl'))]);
 }
 const bills = () => { store.set('visitedBills', true); return recurringPage('bills'); };
 const income = () => recurringPage('income');
@@ -1852,8 +1853,11 @@ async function payView() {
           <li><b>Leave balances</b> and year-to-date totals from your latest payslip</li>
           <li>A <b>download</b> for tax time</li></ul>
         <p class="hint">Tip: once pay is regular, use <b>Set up as regular income</b> so it shows in Income and the Budget.</p>
-        <div class="row"><button class="primary" id="ps-scan">Scan payslip (PDF or photo)</button><button id="ps-add">Type it in</button></div></section>`;
-    $('#ps-add').onclick = async () => { if (await payslipForm()) payView(); };
+        <div class="row"><button class="primary" id="ps-scan">Scan payslip (PDF or photo)</button><button id="ps-add">Type it in</button></div></section>
+      <div id="ps-cl"></div>`;
+    renderCentrelink($('#ps-cl'));
+    renderCentrelink($('#ps-cl'));
+  $('#ps-add').onclick = async () => { if (await payslipForm()) payView(); };
     $('#ps-scan').onclick = () => scanPayslip(payView);
     return;
   }
@@ -1867,6 +1871,7 @@ async function payView() {
   view.innerHTML = `<div class="page-head"><div><h1 class="page-title">Payslips</h1><div class="who-now inline">${esc(label)}</div></div>
       <div class="row"><select id="ps-fy" style="width:auto;margin:0" aria-label="Financial year">${fys.map(f => `<option value="${f}" ${f === payFy ? 'selected' : ''}>FY ${f.slice(0, 4)}–${f.slice(5)}</option>`).join('')}</select>
         <button class="primary" id="ps-scan">Scan payslip</button><button id="ps-add">+ Type one in</button></div></div>
+    <div id="ps-cl"></div>
     <div class="tiles">
       <div class="tile"><div class="tile-label">Gross pay</div><div class="tile-value">${moneyRound(gross)}</div><div class="tile-sub">${rows.length} payslip${rows.length === 1 ? '' : 's'} this year</div></div>
       <div class="tile"><div class="tile-label">Tax withheld</div><div class="tile-value">${moneyRound(tax)}</div><div class="tile-sub">${gross ? (tax / gross * 100).toFixed(1) : 0}% of gross</div></div>
@@ -2169,6 +2174,96 @@ async function reportView() {
   };
 }
 
+// ---------- CENTRELINK ESTIMATE (income test: board, wages from payslips, other income) ----------
+function clPayment(rule, assessed) {
+  const { max_rate: max, free_area: free, band1_to: b1, taper1: t1, taper2: t2 } = rule;
+  const red = assessed <= free ? 0 : assessed <= b1 ? (assessed - free) * t1 : (b1 - free) * t1 + (assessed - b1) * t2;
+  return Math.max(0, max - red);
+}
+async function renderCentrelink(el, { title = true } = {}) {
+  if (!el) return;
+  const ids = personView === 'all' ? cache.members.filter(m => m.centrelink?.rule && m.centrelink.rule !== 'none').map(m => m.id) : [personView];
+  const results = (await Promise.all(ids.map(id => sb.rpc('centrelink_estimate', { p_member: id }).then(r => r.data).catch(() => null)))).filter(Boolean);
+  const set = results.filter(r => r.configured);
+  if (!set.length) {
+    el.innerHTML = personView === 'all' ? '' : `<section class="card"><h2>Centrelink estimate</h2><p class="hint">Not set up for ${esc(personName())}. If they get JobSeeker, turn it on from the <button class="link" data-go="members">Household</button> page → Centrelink.</p></section>`;
+    el.querySelectorAll('[data-go]').forEach(b => b.onclick = () => show(b.dataset.go));
+    return;
+  }
+  el.innerHTML = set.map((e, i) => {
+    const r = e.rule, name = e.name || personName(e.member);
+    const cut = Number(e.cutoff_fn), free = Number(r.free_area), a = Number(e.assessed_fn);
+    const pos = v => Math.min(100, Math.max(0, v / cut * 100));
+    const zone = a <= free ? 'ok' : a < cut ? 'taper' : 'over';
+    const boardRoom = Math.max(0, (Number(e.interest_fn) + free - Number(e.wages_fn) - Number(e.other_fn)) / Number(e.board_pct) - Number(e.board_fn));
+    const basisWord = { lodging: 'lodging only', bnb: 'bed & breakfast', board: 'full board' }[e.board_basis] || e.board_basis;
+    return `<section class="card cl-card" data-i="${i}">
+      <div class="sec-head"><div><h2>Centrelink estimate — ${esc(name)}</h2><p class="hint">${esc(r.label)} · rates from ${esc(fmtDate(r.as_at))} · an estimate, not Centrelink’s decision</p></div></div>
+      <div class="tiles cl-tiles">
+        <div class="tile ${zone === 'ok' ? 'good' : zone === 'taper' ? 'warn' : 'bad'}"><div class="tile-label">Income Centrelink counts ${info(`Board: ${Math.round(e.board_pct * 100)}% of what boarders pay you (${basisWord}) minus your share of the home-loan interest, never below $0. Plus wages before tax from your latest payslip, plus any other income you set. The first ${money(free)} a fortnight doesn’t reduce your payment.`)}</div>
+          <div class="tile-value">${money(a)}<small> /fn</small></div><div class="tile-sub">the first ${moneyRound(free)} is free</div></div>
+        <div class="tile"><div class="tile-label">Estimated payment</div><div class="tile-value">${money(e.estimate_fn)}<small> /fn</small></div><div class="tile-sub">of ${money(r.max_rate)} maximum${Number(e.currently_set_up_fn) && Math.abs(e.currently_set_up_fn - e.estimate_fn) > 1 ? ` · Income page says ${money(e.currently_set_up_fn)}` : ''}</div></div>
+        <div class="tile good"><div class="tile-label">Wages you can earn before it drops ${info('Gross wages (before tax) per fortnight you could earn on top of what’s already counted before your payment starts to reduce.')}</div><div class="tile-value">${money(e.wages_room_fn)}<small> /fn</small></div><div class="tile-sub">before tax</div></div>
+      </div>
+      <div class="cl-meter" role="meter" aria-valuemin="0" aria-valuemax="${cut}" aria-valuenow="${a}" aria-label="Income counted by Centrelink">
+        <div class="cl-zone free" style="width:${pos(free)}%"></div><div class="cl-zone taper" style="left:${pos(free)}%;width:${100 - pos(free)}%"></div>
+        <div class="cl-fill ${zone}" style="width:${Math.max(a > 0 ? 1 : 0, pos(a))}%"></div>
+        <div class="cl-mark" style="left:${pos(free)}%"><span>${moneyRound(free)} free</span></div>
+      </div>
+      <div class="cl-scale"><span>$0</span><span>payment reduces 50c per $ to ${moneyRound(r.band1_to)}, then 60c</span><span>${moneyRound(cut)} — $0 paid</span></div>
+      <table class="list rpt-tbl cl-break"><tbody>
+        <tr><td>Board — your share ${money(e.board_fn)} × ${Math.round(e.board_pct * 100)}% (${esc(basisWord)})</td><td class="num">${money(e.board_fn * e.board_pct)}</td></tr>
+        <tr class="sub"><td>less your share of home-loan interest</td><td class="num">− ${money(e.interest_fn)}</td></tr>
+        <tr><td><b>Board counted</b></td><td class="num"><b>${money(e.board_assessed_fn)}</b></td></tr>
+        <tr><td>Wages (before tax)${e.payslip ? ` <span class="hint">from ${esc(e.payslip.employer || 'payslip')}, ${esc(fmtDate(e.payslip.date))}</span>` : ' <span class="hint">no payslip in the last 6 weeks</span>'}</td><td class="num">${money(e.wages_fn)}</td></tr>
+        ${Number(e.other_fn) ? `<tr><td>Other income</td><td class="num">${money(e.other_fn)}</td></tr>` : ''}
+        <tr class="total"><td><b>Counted per fortnight</b></td><td class="num"><b>${money(a)}</b></td></tr>
+      </tbody></table>
+      <p class="hint">Board could go up by about <b>${money(boardRoom)}</b> a fortnight (your share) before it affects the payment — the interest soaks it up.</p>
+      <div class="cl-whatif"><label>What if I earn <span class="hint">wages per fortnight, before tax</span>
+        <input type="range" min="0" max="${Math.ceil(cut / 50) * 50 + 200}" step="10" value="${Math.round(e.wages_fn)}" class="cl-range"></label>
+        <div class="cl-out" aria-live="polite"></div></div>
+      <p class="hint">Report wages to Centrelink every fortnight, even when it’s under ${moneyRound(free)}. If you had low income for a while you may have <b>working credits</b>, which can let you keep more of the payment for a while when you start work — Centrelink works this out. <a href="${esc(r.source)}" target="_blank" rel="noopener">Income test details</a>.</p>
+    </section>`; }).join('');
+  el.querySelectorAll('.cl-card').forEach(card => {
+    const e = set[card.dataset.i], range = card.querySelector('.cl-range'), out = card.querySelector('.cl-out');
+    const other = Number(e.board_assessed_fn) + Number(e.other_fn);
+    const upd = () => { const w = Number(range.value), pay = clPayment(e.rule, other + w);
+      out.innerHTML = `Earning <b>${money(w)}</b> → JobSeeker about <b>${money(pay)}</b>${pay <= 0 ? ' (stops)' : ''} · together <b>${money(w + pay)}</b> a fortnight before tax${w > 0 ? ` (${money(w + pay - Number(e.rule.max_rate))} more than JobSeeker alone)` : ''}`; };
+    range.oninput = upd; upd();
+  });
+  wireInfoTips();
+}
+function centrelinkSettings(m) {
+  const c = m.centrelink || {};
+  return new Promise(async resolve => {
+    const rules = await q(sb.from('income_test_rules').select('*').order('label'));
+    const dlg = document.createElement('dialog');
+    dlg.innerHTML = `<form method="dialog"><h2>Centrelink — ${esc(memberName(m))}</h2>
+      <p class="hint">Used to estimate how income (board, wages from payslips) changes their payment. Rates are kept up to date centrally.</p>
+      <div class="formgrid">
+        <label>Payment <select name="rule"><option value="none">Not on a Centrelink payment / don’t estimate</option>${rules.map(r => `<option value="${r.id}" ${c.rule === r.id ? 'selected' : ''}>${esc(r.label)}</option>`).join('')}</select></label>
+        <label>What boarders get <select name="board_basis">${[['lodging', 'Room only, no meals (70% counted)'], ['bnb', 'Room and breakfast (50%)'], ['board', 'Room and meals (20%)']].map(([k, v]) => `<option value="${k}" ${(c.board_basis || 'lodging') === k ? 'selected' : ''}>${v}</option>`).join('')}</select></label>
+        <label>Other income per fortnight <span class="hint">counted by Centrelink, not wages or board</span><input type="number" step="0.01" min="0" name="other_fn" value="${esc(c.other_fn ?? '')}"></label>
+        <label>Maximum rate per fortnight <span class="hint">leave blank for the standard rate</span><input type="number" step="0.01" min="0" name="max_rate" value="${esc(c.max_rate ?? '')}"></label>
+      </div>
+      <div class="row"><button class="primary" value="save">Save</button><button value="cancel" formnovalidate>Cancel</button></div></form>`;
+    document.body.appendChild(dlg);
+    const f = $('form', dlg);
+    f.addEventListener('submit', async e => {
+      if (e.submitter?.value !== 'save') return;
+      e.preventDefault();
+      const out = { rule: f.rule.value, board_basis: f.board_basis.value };
+      if (f.other_fn.value !== '') out.other_fn = Number(f.other_fn.value);
+      if (f.max_rate.value !== '') out.max_rate = Number(f.max_rate.value);
+      await busy(e.submitter, () => q(sb.from('household_members').update({ centrelink: out }).eq('id', m.id)));
+      toast('Centrelink settings saved'); dlg.close(); resolve(true);
+    });
+    dlg.addEventListener('close', () => { dlg.remove(); resolve(false); });
+    dlg.showModal();
+  });
+}
+
 // ---------- HOUSEHOLD MEMBERS (people inside this login) ----------
 TABLES.household_members = { title: 'People in the household', addTitle: 'person', order: ['sort_order'],
   fields: [
@@ -2188,7 +2283,8 @@ async function membersView() {
       <div class="member-head"><span class="avatar" aria-hidden="true">${esc((memberName(m)[0] || '?').toUpperCase())}</span>
         <div><h2>${m.name ? esc(m.name) : '<span class="muted">No name yet</span>'}</h2><span class="pill">${esc(m.is_primary ? 'Main person (you)' : RELATIONSHIPS[m.relationship] || m.relationship)}</span></div></div>
       <dl class="member-dl">${m.email ? `<dt>Email</dt><dd>${esc(m.email)}</dd>` : ''}${m.phone ? `<dt>Phone</dt><dd>${esc(m.phone)}</dd>` : ''}${m.notes ? `<dt>Notes</dt><dd>${esc(m.notes)}</dd>` : ''}</dl>
-      <div class="row"><button class="small m-edit" data-id="${m.id}">Edit details</button>${m.is_primary ? '' : `<button class="small danger m-del" data-id="${m.id}">Remove</button>`}</div>
+      <p class="hint">Centrelink: ${m.centrelink?.rule && m.centrelink.rule !== 'none' ? '<b>estimating JobSeeker</b>' : 'not set up'}</p>
+      <div class="row"><button class="small m-edit" data-id="${m.id}">Edit details</button><button class="small m-cl" data-id="${m.id}">Centrelink</button>${m.is_primary ? '' : `<button class="small danger m-del" data-id="${m.id}">Remove</button>`}</div>
     </section>`).join('')}</div>
     <section class="card"><h2>How splitting works</h2>
       <p>New bills, debts and accounts are <b>split equally</b> between everyone unless you choose otherwise. Open any bill, debt or account and use <b>Who pays</b> to give it to one person or set your own percentages.</p>
@@ -2201,6 +2297,7 @@ async function membersView() {
     const fixed = m.is_primary ? { relationship: 'me' } : {};
     if (await openForm('household_members', m, fixed)) { await loadLookups(); renderWhoSwitch(); membersView(); }
   });
+  view.querySelectorAll('.m-cl').forEach(b => b.onclick = async () => { if (await centrelinkSettings(memberById(b.dataset.id))) { await loadLookups(); membersView(); } });
   view.querySelectorAll('.m-del').forEach(b => b.onclick = async () => {
     const m = memberById(b.dataset.id);
     if (!confirm(`Remove ${memberName(m)} from the household?\n\nTheir share of any split bills, debts and accounts is shared out between the others. Their payslips are kept but no longer linked to anyone.`)) return;

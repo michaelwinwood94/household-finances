@@ -1,0 +1,8 @@
+-- 023 Centrelink estimate (applied live; full SQL in Supabase history)
+--  * income_test_rules: shared, read-only rate table (JobSeeker single no children from 20 Sep 2026: max 833.70, free area 150,
+--    50c taper to 256, 60c above; cut-off 1,557.17). Update this row when rates are indexed (20 March / 20 September).
+--  * household_members.centrelink jsonb {rule, board_basis lodging|bnb|board, other_fn, max_rate override}
+--  * centrelink_estimate(member): board share × 70/50/20% minus that person's share of home-loan interest (12-month average, never below 0)
+--    + gross wages from their latest payslip (last 6 weeks, per fortnight) + other income → counted income, estimated payment,
+--    room before reduction, cut-off.
+--  * daily_checks(): weekly alert when counted income is above the free area.
