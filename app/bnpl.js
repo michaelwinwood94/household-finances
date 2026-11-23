@@ -216,3 +216,49 @@ export function parseBnplPdf(provider, pages, todayISO) {
   const lines = pages.flat();
   return provider === 'deferit' ? parseDeferitText(lines, todayISO) : parseAfterpayText(lines);
 }
+
+// ---- Text copied from the Deferit "Upcoming payments" page (Ctrl+A, Ctrl+C) ----
+export function parseDeferitPaste(text, todayISO) {
+  const L = String(text || '').split(/\r?\n/).map(x => x.trim()).filter(Boolean);
+  let hdr = null; const out = [];
+  for (let i = 0; i < L.length; i++) {
+    const h = /^(January|February|March|April|May|June|July|August|September|October|November|December)\s+(20\d{2})$/i.exec(L[i]);
+    if (h) { hdr = { m: MONTH_NAMES.indexOf(h[1].toLowerCase()), y: Number(h[2]) }; continue; }
+    if (!/^[A-Za-z]{3}$/.test(L[i]) || monthIdx(L[i]) < 0 || !/^\d{1,2}$/.test(L[i + 1] || '')) continue;
+    const mon = monthIdx(L[i]), day = Number(L[i + 1]);
+    // the rest of this entry runs until the next month/day pair
+    let j = i + 2; const seg = [];
+    while (j < L.length && !(/^[A-Za-z]{3}$/.test(L[j]) && monthIdx(L[j]) >= 0 && /^\d{1,2}$/.test(L[j + 1] || ''))) seg.push(L[j++]);
+    const name = seg[0] || '', kind = seg.find(x => /^(Instalment|Monthly\s*fee)/i.test(x)) || '';
+    const am = seg.map(x => /^\$\s?([\d,]+\.\d{2})$/.exec(x)).find(Boolean);
+    if (!kind || !am) continue;
+    const isFee = /fee/i.test(kind), of = parseOf(kind) || [null, null];
+    const y = hdr ? (mon < hdr.m - 6 ? hdr.y + 1 : mon > hdr.m + 6 ? hdr.y - 1 : hdr.y) : null;
+    out.push({ provider: 'deferit', merchant: isFee ? 'Deferit monthly fee' : cleanMerchant(name), instalment_no: of[0], instalments_total: of[1], is_fee: isFee,
+      due_date: y ? `${y}-${pad(mon + 1)}-${pad(day)}` : inferYear(day, mon, todayISO), amount: Number(am[1].replace(/,/g, '')) });
+  }
+  return out;
+}
+// Text copied from the Afterpay "Upcoming payments" page: merchant, "2 of 4", "Tue, 1 Dec 2026", "8 days", "$37.91"
+export function parseAfterpayPaste(text) {
+  const L = String(text || '').split(/\r?\n/).map(x => x.trim()).filter(Boolean), out = [];
+  for (let i = 1; i < L.length; i++) {
+    const of = /^(\d)\s+of\s+(\d)$/i.exec(L[i]); if (!of) continue;
+    const name = L[i - 1];
+    let date = null, amount = null;
+    for (let j = i + 1; j < Math.min(L.length, i + 8) && (date == null || amount == null); j++) {
+      if (/^\d\s+of\s+\d$/i.test(L[j])) break;
+      if (date == null) { const d = parseLongDate(L[j]); if (d) { date = d; continue; } }
+      const a = /^\$\s?([\d,]+\.\d{2})$/.exec(L[j]); if (a && date) amount = Number(a[1].replace(/,/g, ''));
+    }
+    if (!date || amount == null) continue;
+    out.push({ provider: 'afterpay', merchant: cleanMerchant(name), instalment_no: Number(of[1]), instalments_total: Number(of[2]), due_date: date, amount });
+  }
+  return out;
+}
+export function detectBnplPaste(text) {
+  if (/Instalment\s+\d+\s+of\s+\d+/i.test(text) && /deferit/i.test(text)) return 'deferit';
+  if (/^\d\s+of\s+\d$/im.test(text) && /afterpay|Pay now|Due in/i.test(text)) return 'afterpay';
+  return null;
+}
+export function parseBnplPaste(provider, text, todayISO) { return provider === 'deferit' ? parseDeferitPaste(text, todayISO) : parseAfterpayPaste(text); }
