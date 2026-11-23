@@ -1,11 +1,11 @@
 import { createClient } from 'https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2/+esm';
-import { SUPABASE_URL, SUPABASE_PUBLISHABLE_KEY } from './config.js?v=202611240058';
-import { parseBankCsv, parseWestpacActivity, parseLatitudeStatement, isLatitudeStatement, splitAccounts, linesFromItems } from './csv.js?v=202611240058';
-import { readPayslip, toLines } from './payslip.js?v=202611240058';
-import { readBill } from './bill.js?v=202611240058';
-import { parseAfterpay, parseDeferit, mergeRows, isKnown, shopKey, bestShopKey } from './bnpl.js?v=202611240058';
-import { toast, softDelete, busy, friendlyError, watchOnline, info, wireInfoTips, skeleton, wireInstall, applyPrefs, settingsMenu, prefs, setPref, store } from './ui.js?v=202611240058';
-import { columnChart, hbarChart, lineChart, SERIES, moneyRound, moneyCompact } from './charts.js?v=202611240058';
+import { SUPABASE_URL, SUPABASE_PUBLISHABLE_KEY } from './config.js?v=202611240110';
+import { parseBankCsv, parseWestpacActivity, parseLatitudeStatement, isLatitudeStatement, splitAccounts, linesFromItems } from './csv.js?v=202611240110';
+import { readPayslip, toLines } from './payslip.js?v=202611240110';
+import { readBill } from './bill.js?v=202611240110';
+import { parseAfterpay, parseDeferit, mergeRows, isKnown, shopKey, bestShopKey } from './bnpl.js?v=202611240110';
+import { toast, softDelete, busy, friendlyError, watchOnline, info, wireInfoTips, skeleton, wireInstall, applyPrefs, settingsMenu, prefs, setPref, store } from './ui.js?v=202611240110';
+import { columnChart, hbarChart, lineChart, SERIES, moneyRound, moneyCompact } from './charts.js?v=202611240110';
 
 const sb = createClient(SUPABASE_URL, SUPABASE_PUBLISHABLE_KEY);
 const $ = (s, el = document) => el.querySelector(s);
@@ -1085,8 +1085,8 @@ async function importView() {
   const fresh = await q(sb.from('v_account_balances').select('id, name, last_transaction_date').eq('is_active', true));
   const freshHtml = fresh.length ? `<div class="chips">${fresh.map(a => { const d = a.last_transaction_date ? -daysFromToday(a.last_transaction_date) : null;
     return `<span class="chip"><span class="fresh"><span class="fresh-dot ${d == null || d > 14 ? 'stale' : d > 7 ? 'old' : ''}"></span>${esc(a.name)}: ${d == null ? 'no data yet' : 'up to ' + fmtDate(a.last_transaction_date)}</span></span>${(l => l ? `<a class="chip link-chip" href="${esc(l.url)}" target="_blank" rel="noopener noreferrer">Open ${esc(l.name)} ↗</a>` : '')(linkFor({ account_id: a.id }))}`; }).join('')}</div>` : '';
-  view.innerHTML = `<div class="page-head"><div><h1 class="page-title">Import</h1><p class="hint">Add bank statements: CommBank or Westpac CSV, or the Westpac Account activity PDF.</p></div></div>${freshHtml}<div class="card"><h2>Choose files</h2>
-    <p class="hint">Choose one or more files at once: <b>CSV</b> exports from CommBank or Westpac, or the <b>Account activity PDF</b> from the Westpac app.
+  view.innerHTML = `<div class="page-head"><div><h1 class="page-title">Import</h1><p class="hint">Add statements: CommBank or Westpac CSV, the Westpac Account activity PDF, or a Latitude loan statement PDF.</p></div></div>${freshHtml}<div class="card"><h2>Choose files</h2>
+    <p class="hint">Choose one or more files at once: <b>CSV</b> exports from CommBank or Westpac, the <b>Account activity PDF</b> from the Westpac app, or a <b>Latitude loan statement</b> (PDF eStatement — it also updates the Latitude debt).
     Each file is matched to an account (or a new account is set up for you). Importing the same dates twice is safe — duplicates are skipped.</p>
     <label>Statement files <input type="file" id="i-file" accept=".csv,text/csv,.pdf,application/pdf" multiple></label>
     <div id="i-preview"></div></div>

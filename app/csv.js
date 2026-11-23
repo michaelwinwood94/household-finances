@@ -226,7 +226,10 @@ export function isLatitudeStatement(pages) {
 }
 
 export function parseLatitudeStatement(pages) {
-  const lines = linesFromItems(pages, 4).map(l => l.text);
+  // Some PDF readers split dates into pieces ("26 - 05 - 2023"); tidy them back up first
+  const lines = linesFromItems(pages, 4).map(l => l.text
+    .replace(/(\d{1,2})\s*[-/.]\s*(\d{1,2})\s*[-/.]\s*(\d{4})/g, '$1-$2-$3')
+    .replace(/([A-Z]{2,4})\s*-\s*(\d{4,})/g, '$1-$2'));
   const all = lines.join('\n');
   const num = s => Number(s.replace(/,/g, ''));
   const grab = re => { const m = all.match(re); return m ? m[1] : null; };
