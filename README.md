@@ -97,7 +97,6 @@ Starter categories and ~30 auto-categorising rules are added automatically.
 Dark mode: ☾/☀ button in the top bar (one tap); **Aa** menu has Light / Dark / Auto. New devices default to Auto (follows the phone).
 
 ## Coming next
-- **Stage 2 (rest):** budget-overspend alerts.
 - **Stage 3 (rest):** phone notifications, budget-overspend alerts, Google Drive drop-folder import.
 - **Stage 4:** cash-flow forecast to next payday; optional live bank feeds (Consumer Data Right provider).
 
