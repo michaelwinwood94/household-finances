@@ -1,10 +1,10 @@
 import { createClient } from 'https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2/+esm';
-import { SUPABASE_URL, SUPABASE_PUBLISHABLE_KEY } from './config.js?v=202611231741';
-import { parseBankCsv, parseWestpacActivity, splitAccounts, linesFromItems } from './csv.js?v=202611231741';
-import { readPayslip, toLines } from './payslip.js?v=202611231741';
-import { readBill } from './bill.js?v=202611231741';
-import { toast, softDelete, busy, friendlyError, watchOnline, info, wireInfoTips, skeleton, wireInstall, applyPrefs, settingsMenu, prefs, setPref, store } from './ui.js?v=202611231741';
-import { columnChart, hbarChart, lineChart, SERIES, moneyRound, moneyCompact } from './charts.js?v=202611231741';
+import { SUPABASE_URL, SUPABASE_PUBLISHABLE_KEY } from './config.js?v=202611232040';
+import { parseBankCsv, parseWestpacActivity, splitAccounts, linesFromItems } from './csv.js?v=202611232040';
+import { readPayslip, toLines } from './payslip.js?v=202611232040';
+import { readBill } from './bill.js?v=202611232040';
+import { toast, softDelete, busy, friendlyError, watchOnline, info, wireInfoTips, skeleton, wireInstall, applyPrefs, settingsMenu, prefs, setPref, store } from './ui.js?v=202611232040';
+import { columnChart, hbarChart, lineChart, SERIES, moneyRound, moneyCompact } from './charts.js?v=202611232040';
 
 const sb = createClient(SUPABASE_URL, SUPABASE_PUBLISHABLE_KEY);
 const $ = (s, el = document) => el.querySelector(s);
@@ -739,6 +739,7 @@ async function budget() {
         ${list(p.bill_items, [i => `<b>${esc(i.name)}</b><div class="hint">${money(i.amount)} / ${freq(i.frequency)}${i.share < 100 ? ` · ${i.share}% counted` : ''}${i.is_debt_repayment ? ' · counted under Debts' : ''}</div>`, i => i.is_debt_repayment ? '<span class="hint">in Debts</span>' : money(i.monthly)])}</details>
       <details class="card fold"><summary><h2>Debts</h2><span class="hint">${moneyRound(p.debt_balance)} owed · ${moneyRound(p.debt_monthly)} / month</span></summary>
         ${list(p.debt_items, [d => `<b>${esc(d.creditor)}</b><div class="hint">${d.balance ? money(d.balance) + ' owed' : 'balance not entered'}${d.share < 100 ? ` · ${d.share}% counted` : ''}${d.hardship === 'approved' ? ' · on hardship' : ''}</div>`, d => money(d.monthly)])}</details>
+      <section class="card" id="b-budget"><p class="loading">Loading…</p></section>
       ${budgetWho !== 'overall' ? `<p class="hint">Each bill, income, debt and account has a "who pays" split — ${esc(names[budgetWho])}'s part is shown. Everyday spending uses the usual split from Setup. Money moved between members isn't counted.</p>` : ''}`;
     hbarChart($('#b-compare'), { items: [
       { label: 'Income', value: p.regular_in, color: SERIES.blue },
@@ -749,6 +750,7 @@ async function budget() {
     if (spend.length > 8) { const rest = spend.slice(7); spend = spend.slice(0, 7).concat([{ label: `Other (${rest.length})`, value: sum(rest, x => x.value) }]); }
     hbarChart($('#b-spend'), { items: spend, color: SERIES.orange, empty: 'No spending imported.' });
     if (spend.length) $('#b-spend').insertAdjacentHTML('beforeend', `<p class="hint total-line">Total ${money(p.actual_out)} per month · income ${money(p.actual_in)}</p>`);
+    budgetEditor($('#b-budget')).catch(e => { $('#b-budget').innerHTML = `<p class="msg error">${esc(friendlyError(e))}</p>`; });
 
   };
   draw();
@@ -1304,7 +1306,7 @@ async function debts() {
     <section class="card" id="d-list"></section><section class="card hidden" id="d-inst"></section><section class="card hidden" id="d-log"></section>`;
   const instalments = async () => {
     const box = $('#d-inst');
-    const rows = await q(sb.from('debt_instalments').select('id, debt_id, due_date, merchant, amount, is_paid').order('due_date').order('merchant').limit(1000));
+    const rows = await q(sb.from('debt_instalments').select('id, debt_id, due_date, merchant, amount, is_paid, auto_matched').order('due_date').order('merchant').limit(1000));
     if (!rows.length) { box.classList.add('hidden'); return; }
     box.classList.remove('hidden');
     const names = Object.fromEntries(cache.debts.map(d => [d.id, d.creditor]));
@@ -1314,9 +1316,9 @@ async function debts() {
     const in30 = sum(owing.filter(r => r.due_date <= new Date(Date.now() + 30 * 864e5).toLocaleDateString('en-CA')), r => Number(r.amount));
     box.innerHTML = `<div class="sec-head"><div><h2>Instalments still to pay</h2><p class="hint">${owing.length} left · ${money(sum(owing, r => Number(r.amount)))} in total · ${money(in30)} in the next 30 days. Tick one when it's paid; the debt balance follows.</p></div></div>` +
       Object.entries(days).map(([d, list], i) => `<details ${i < 2 ? 'open' : ''}><summary><strong>${esc(shortDate(d))}</strong> · ${money(sum(list.filter(r => !r.is_paid), r => Number(r.amount)))} · ${list.length} payment${list.length === 1 ? '' : 's'}</summary>
-        <table class="rpt-tbl"><tbody>${list.map(r => `<tr><td><label><input type="checkbox" class="inst-paid" data-id="${r.id}" data-debt="${r.debt_id}" ${r.is_paid ? 'checked' : ''}> ${esc(r.merchant)}</label></td><td class="num">${money(r.amount)}</td></tr>`).join('')}</tbody></table></details>`).join('');
+        <table class="rpt-tbl"><tbody>${list.map(r => `<tr><td><label><input type="checkbox" class="inst-paid" data-id="${r.id}" data-debt="${r.debt_id}" ${r.is_paid ? 'checked' : ''}> ${esc(r.merchant)}${r.auto_matched ? ' <span class="tag" title="Matched to a bank payment. Untick to undo.">auto-matched</span>' : ''}</label></td><td class="num">${money(r.amount)}</td></tr>`).join('')}</tbody></table></details>`).join('');
     box.querySelectorAll('.inst-paid').forEach(c => c.onchange = async () => {
-      await q(sb.from('debt_instalments').update({ is_paid: c.checked, paid_on: c.checked ? today() : null }).eq('id', c.dataset.id));
+      await q(sb.from('debt_instalments').update(c.checked ? { is_paid: true, paid_on: today(), match_ignored: false } : { is_paid: false, paid_on: null, matched_txn_id: null, auto_matched: false, match_ignored: true }).eq('id', c.dataset.id));
       const left = await q(sb.from('debt_instalments').select('amount').eq('debt_id', c.dataset.debt).eq('is_paid', false));
       await q(sb.from('debts').update({ current_balance: sum(left, r => Number(r.amount)), balance_as_at: today() }).eq('id', c.dataset.debt));
       await instalments(); await top(); await list();
@@ -1351,7 +1353,126 @@ async function debts() {
     });
     $('#d-list').querySelectorAll('.log').forEach(b => b.onclick = () => showLog(current[b.dataset.i]));
   };
+  try { await sb.rpc('match_instalments', { p_owner: session.user.id }); } catch { /* matching also runs on import and every morning */ }
   await Promise.all([top(), list(), instalments()]);
+}
+
+
+// ---------- BUDGET EDITOR (monthly limit per category vs this month's spending) ----------
+async function budgetEditor(box) {
+  const m0 = today().slice(0, 7) + '-01';
+  const [cats, tx] = await Promise.all([
+    q(sb.from('categories').select('id, name, monthly_budget, sort_order').eq('kind', 'expense').order('sort_order').order('name')),
+    q(sb.from('transactions').select('category_id, amount').gte('txn_date', m0).lt('amount', 0).eq('is_one_off', false).limit(5000)),
+  ]);
+  const spent = {};
+  tx.forEach(t => { if (t.category_id) spent[t.category_id] = (spent[t.category_id] || 0) - Number(t.amount); });
+  const rows = cats.filter(c => !/^bounced/i.test(c.name)).map(c => ({ ...c, b: c.monthly_budget == null ? null : Number(c.monthly_budget), s: spent[c.id] || 0 }));
+  const used = rows.filter(r => r.b != null || r.s > 0).sort((x, y) => (y.b != null) - (x.b != null) || y.s - x.s);
+  const rest = rows.filter(r => !used.includes(r));
+  const set = rows.filter(r => r.b > 0);
+  const row = r => {
+    const pct = r.b > 0 ? r.s / r.b * 100 : 0;
+    const left = r.b > 0 ? r.b - r.s : null;
+    return `<tr><td data-label="Category">${esc(r.name)}${r.b > 0 ? `<div class="progress sm" aria-hidden="true"><span style="width:${Math.min(100, pct)}%;${pct > 100 ? 'background:var(--bad)' : pct > 85 ? 'background:var(--warn)' : ''}"></span></div>` : ''}</td>
+      <td class="num" data-label="This month">${money(r.s)}</td>
+      <td class="num" data-label="Monthly budget"><input type="number" min="0" step="1" inputmode="decimal" class="bud" data-id="${r.id}" value="${r.b ?? ''}" placeholder="—" aria-label="Monthly budget for ${esc(r.name)}"></td>
+      <td class="num ${left != null && left < 0 ? 'neg' : ''}" data-label="Left">${left == null ? '<span class="hint">—</span>' : left >= 0 ? money(left) : `over ${money(-left)}`}</td></tr>`;
+  };
+  const table = list => `<div class="tablewrap"><table class="list"><thead><tr><th>Category</th><th class="num">This month</th><th class="num">Budget / month</th><th class="num">Left</th></tr></thead><tbody>${list.map(row).join('')}</tbody></table></div>`;
+  const tb = sum(set, r => r.b), ts = sum(set, r => r.s);
+  box.innerHTML = `<div class="sec-head"><div><h2>Budget by category</h2><p class="hint">Set a monthly limit; the bar shows this month so far. One-offs and bounced payments aren't counted.</p></div></div>
+    ${set.length ? `<p class="callout ${ts > tb ? 'bad' : 'good'}">Budgeted categories: <b>${money(ts)}</b> spent of <b>${money(tb)}</b>${ts > tb ? ` — over by ${money(ts - tb)}` : ` — ${money(tb - ts)} left`}.</p>` : ''}
+    ${table(used)}
+    ${rest.length ? `<details class="fold"><summary><span class="hint">${rest.length} more categories with no spending this month</span></summary>${table(rest)}</details>` : ''}`;
+  box.querySelectorAll('input.bud').forEach(i => i.onchange = async () => {
+    const v = i.value === '' ? null : Math.max(0, Number(i.value));
+    await q(sb.from('categories').update({ monthly_budget: v }).eq('id', i.dataset.id));
+    const c = cache.categories.find(x => x.id === i.dataset.id); if (c) c.monthly_budget = v;
+    toast('Budget saved'); budgetEditor(box);
+  });
+}
+
+// ---------- GOALS (buffer, catch up on arrears, pay-down order) ----------
+const CASH_TYPES = ['transaction', 'savings', 'offset', 'cash'];
+const num = v => Number(v || 0);
+function monthsToClear(balance, ratePct, monthlyPay) {
+  if (!(monthlyPay > 0)) return null;
+  const r = (ratePct || 0) / 1200;
+  if (r === 0) return Math.ceil(balance / monthlyPay);
+  if (monthlyPay <= r * balance) return Infinity;
+  return Math.ceil(-Math.log(1 - r * balance / monthlyPay) / Math.log(1 + r));
+}
+const monthsWord = m => m == null ? '—' : m === Infinity ? 'not at this payment' : m < 12 ? `${m} mo` : `${Math.floor(m / 12)} yr${m % 12 ? ' ' + (m % 12) + ' mo' : ''}`;
+
+async function goals() {
+  const [bals, ds, gs, st] = await Promise.all([
+    q(sb.from('v_account_balances').select('name, account_type, calculated_balance').eq('is_active', true)),
+    q(sb.from('debts').select('*').eq('status', 'active')),
+    q(sb.from('goals').select('*').eq('goal_type', 'catch_up')),
+    q(sb.from('settings').select('buffer_target').maybeSingle()),
+  ]);
+  const target = num(st?.buffer_target ?? 1000);
+  const cash = sum(bals.filter(b => CASH_TYPES.includes(b.account_type)), b => b.calculated_balance);
+  const pct = target > 0 ? Math.max(0, Math.min(100, cash / target * 100)) : 0;
+
+  // catch-up on arrears
+  const arrears = ds.filter(d => num(d.arrears_amount) > 0).sort((x, y) => num(y.arrears_amount) - num(x.arrears_amount));
+  const cleared = gs.filter(g => g.status === 'active' && ds.some(d => d.id === g.debt_id && num(d.arrears_amount) <= 0));
+  cleared.forEach(g => sb.from('goals').update({ status: 'achieved' }).eq('id', g.id).then(() => {}));
+  const catchRow = d => {
+    const g = gs.find(x => x.debt_id === d.id && x.status === 'active');
+    const owing = num(d.arrears_amount), tgt = Math.max(num(g?.target_amount), owing);
+    const done = tgt > 0 ? Math.max(0, tgt - owing) / tgt * 100 : 0;
+    let need = '<span class="hint">Pick a date to see the fortnightly amount.</span>';
+    if (g?.target_date) {
+      const days = daysFromToday(g.target_date);
+      need = days <= 0 ? '<span class="neg">Date has passed — pick a new one.</span>' : `<b>${money(owing / Math.max(1, Math.ceil(days / 14)))}</b> a fortnight to clear by ${esc(fmtDate(g.target_date))}`;
+    }
+    return `<div class="goal"><div class="goal-top"><b>${esc(d.creditor)}</b><span class="num neg">${money(owing)} overdue</span></div>
+      <div class="progress" aria-hidden="true"><span style="width:${done}%"></span></div>
+      <div class="goal-bot"><span>${need}</span><label class="inline">Clear by <input type="date" class="g-date" data-debt="${d.id}" value="${esc(g?.target_date || '')}"></label></div></div>`;
+  };
+
+  // pay-down order: overdue first (biggest first), then highest interest, then smallest balance
+  const live = ds.filter(d => num(d.current_balance) > 0);
+  const order = [...live].sort((x, y) => (num(y.arrears_amount) > 0) - (num(x.arrears_amount) > 0)
+    || (num(x.arrears_amount) > 0 ? num(y.arrears_amount) - num(x.arrears_amount) : num(y.interest_rate_pct) - num(x.interest_rate_pct) || num(x.current_balance) - num(y.current_balance)));
+  const missing = ds.filter(d => num(d.current_balance) <= 0 && d.debt_type !== 'bnpl');
+  const payRow = (d, i) => {
+    const pay = num(d.min_payment) * (PER_MONTH[d.payment_frequency || 'monthly'] || 0);
+    const why = num(d.arrears_amount) > 0 ? 'Overdue — clear first' : num(d.interest_rate_pct) > 0 ? 'Highest interest next' : 'No interest — smallest first';
+    return `<tr><td class="num" data-label="#">${i + 1}</td><td data-label="Debt"><b>${esc(d.creditor)}</b><div class="hint">${why}</div></td>
+      <td class="num" data-label="Owing">${money(d.current_balance)}</td><td class="num" data-label="Rate">${d.interest_rate_pct != null ? num(d.interest_rate_pct) + '%' : '—'}</td>
+      <td class="num" data-label="Repay / month">${pay ? money(pay) : '—'}</td>
+      <td class="num" data-label="Time to clear">${d.debt_type === 'bnpl' ? '<span class="hint">scheduled</span>' : monthsWord(monthsToClear(num(d.current_balance), num(d.interest_rate_pct), pay))}</td></tr>`;
+  };
+
+  view.innerHTML = `<div class="page-head"><div><h1 class="page-title">Goals</h1><p class="hint">Build a buffer, catch up on overdue amounts, then work down the debts in order</p></div></div>
+    <section class="card"><div class="sec-head"><div><h2>1 · Buffer</h2><p class="hint">Cash on hand across everyday, savings and offset accounts</p></div></div>
+      <div class="goal-top"><span class="tile-value">${money(cash)}</span><span class="hint">target ${money(target)}</span></div>
+      <div class="progress" aria-hidden="true"><span style="width:${pct}%"></span></div>
+      <p class="callout ${cash >= target ? 'good' : cash < 0 ? 'bad' : ''}">${cash < 0 ? `Overdrawn by ${money(-cash)} across your accounts — that comes before any buffer.` : cash >= target ? 'Buffer target reached ✓' : `${money(target - cash)} to go.`}</p>
+      <div class="row"><label class="inline">Buffer target <input type="number" id="g-target" min="0" step="50" value="${target}"></label><button class="small" id="g-target-save">Save</button></div></section>
+    <section class="card"><div class="sec-head"><div><h2>2 · Catch up on overdue amounts</h2><p class="hint">Amounts entered as arrears under Debts</p></div></div>
+      ${arrears.length ? arrears.map(catchRow).join('') : '<p class="callout good">Nothing overdue recorded ✓ <span class="hint">If a creditor says otherwise, enter the overdue amount on that debt under Debts.</span></p>'}
+      ${cleared.length ? `<p class="hint">Cleared: ${cleared.map(g => esc(g.name.replace(/^Clear arrears — /, ''))).join(', ')} ✓</p>` : ''}</section>
+    <section class="card"><div class="sec-head"><div><h2>3 · Pay-down order</h2><p class="hint">Overdue first, then highest interest, then smallest balance. Keep every minimum going; put any extra on #1.</p></div></div>
+      ${order.length ? `<div class="tablewrap"><table class="list"><thead><tr><th class="num">#</th><th>Debt</th><th class="num">Owing</th><th class="num">Rate</th><th class="num">Repay / month</th><th class="num">Time to clear</th></tr></thead><tbody>${order.map(payRow).join('')}</tbody></table></div>` : '<p class="empty">No debts with a balance.</p>'}
+      ${missing.length ? `<p class="hint">Balance not entered, so not ranked: ${missing.map(d => esc(d.creditor)).join(', ')}. Add it under Debts.</p>` : ''}
+      <p class="hint">Time to clear assumes the repayment shown and the entered rate; it is a guide only.</p></section>`;
+  $('#g-target-save').onclick = async () => {
+    const v = Number($('#g-target').value);
+    if (!(v >= 0)) return toast('Enter a target of $0 or more');
+    await q(sb.from('settings').update({ buffer_target: v }).eq('owner_id', session.user.id));
+    cache.settings = { ...cache.settings, buffer_target: v }; toast('Buffer target saved'); goals();
+  };
+  view.querySelectorAll('.g-date').forEach(i => i.onchange = async () => {
+    const d = ds.find(x => x.id === i.dataset.debt), g = gs.find(x => x.debt_id === d.id && x.status === 'active'), owing = num(d.arrears_amount);
+    if (g) await q(sb.from('goals').update({ target_date: i.value || null, target_amount: Math.max(num(g.target_amount), owing) }).eq('id', g.id));
+    else await q(sb.from('goals').insert({ name: `Clear arrears — ${d.creditor}`, goal_type: 'catch_up', debt_id: d.id, target_amount: owing, target_date: i.value || null, priority: d.priority }));
+    toast('Saved'); goals();
+  });
 }
 
 // ---------- INSIGHTS (worked out from the transactions; refreshed every morning and after each import) ----------
@@ -2492,7 +2613,7 @@ async function setup() {
 }
 
 // ---------- navigation & auth ----------
-const VIEWS = { dashboard, insights: insightsView, members: membersView, report: reportView, links: linksView, budget, bills, income, debts, transactions, sort: sortView, import: importView, shared, pay: payView, tax: taxView, setup };
+const VIEWS = { dashboard, insights: insightsView, members: membersView, report: reportView, links: linksView, budget, goals, bills, income, debts, transactions, sort: sortView, import: importView, shared, pay: payView, tax: taxView, setup };
 async function updateSortBadge() {
   const { count } = await sb.from('transactions').select('id', { count: 'exact', head: true }).is('category_id', null);
   for (const id of ['#sort-badge', '#sort-badge-m']) { const b = $(id); if (b) { b.textContent = count || ''; b.classList.toggle('hidden', !count); } }
@@ -2518,6 +2639,7 @@ const rerender = () => { if (session) show(currentView); };
 $('#settings-btn').onclick = e => { e.stopPropagation(); const pop = $('#settings-pop'); const open = pop.classList.contains('hidden');
   closeSheets(); if (open) { settingsMenu(rerender); pop.classList.remove('hidden'); $('#settings-btn').setAttribute('aria-expanded', 'true'); } };
 $('#privacy-btn').onclick = () => setPref('privacy', !prefs.privacy);
+$('#theme-btn').onclick = () => setPref('theme', document.documentElement.dataset.theme === 'dark' ? 'light' : 'dark', rerender);
 $('#more-btn').onclick = e => { e.stopPropagation(); const sh = $('#more-sheet'); const open = sh.classList.contains('hidden'); closeSheets(); if (open) { sh.classList.remove('hidden'); $('#more-btn').setAttribute('aria-expanded', 'true'); } };
 document.addEventListener('click', e => { if (!e.target.closest('#settings-pop, #settings-btn, #more-sheet, #more-btn')) closeSheets(); });
 matchMedia('(prefers-color-scheme: dark)').addEventListener?.('change', () => { if (prefs.theme === 'auto') { applyPrefs(); rerender(); } });

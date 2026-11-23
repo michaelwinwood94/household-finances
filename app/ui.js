@@ -7,7 +7,7 @@ const store = { get(k, d) { try { const v = localStorage.getItem(k); return v ==
 export { store };
 
 // ---------- display settings ----------
-const DEFAULT_PREFS = { size: 'm', font: 'standard', theme: 'light', privacy: false };
+const DEFAULT_PREFS = { size: 'm', font: 'standard', theme: 'auto', privacy: false };
 export const prefs = { ...DEFAULT_PREFS, ...store.get('displayPrefs', {}) };
 const FONT_LINKS = {
   lexend: 'https://fonts.googleapis.com/css2?family=Lexend:wght@400;700&display=swap',
@@ -24,6 +24,7 @@ export function applyPrefs() {
   if (href && !document.querySelector(`link[data-font="${prefs.font}"]`)) {
     const l = document.createElement('link'); l.rel = 'stylesheet'; l.href = href; l.dataset.font = prefs.font; document.head.appendChild(l);
   }
+  const tb = $('#theme-btn'); if (tb) { tb.textContent = dark ? '☀' : '☾'; tb.title = dark ? 'Switch to light mode' : 'Switch to dark mode'; }
   const eye = $('#privacy-btn'); if (eye) { eye.setAttribute('aria-pressed', !!prefs.privacy); eye.title = prefs.privacy ? 'Show amounts' : 'Hide amounts'; eye.textContent = prefs.privacy ? '🙈' : '👁'; }
 }
 export function setPref(k, v, onChange) { prefs[k] = v; store.set('displayPrefs', prefs); applyPrefs(); onChange?.(); }

@@ -1,0 +1,1 @@
+-- Applied live: daily_checks() now calls match_instalments(owner) straight after tag_bounces(owner), before insights_for(owner).

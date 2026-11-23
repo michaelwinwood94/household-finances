@@ -1,0 +1,6 @@
+-- Applied live (full SQL in Supabase migration history): debt_instalments gains matched_txn_id (fk transactions, on delete set null),
+-- auto_matched, match_ignored; debts gains match_from (date, default today Perth).
+-- New match_instalments(p_owner): un-ticks auto-matches whose bank debit was bounced/deleted; ticks each unpaid instalment due within 3 days
+-- to one unused bank debit (same amount, within +-3 days, description contains the creditor's first word, not a bounced payment);
+-- recomputes debt balance = sum of unpaid instalments; raises alerts match:late / match:unlisted / match:differs.
+-- refresh_insights() now calls it. Execute granted to authenticated only; it rejects any owner other than auth.uid().

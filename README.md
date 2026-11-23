@@ -15,7 +15,8 @@ debt register with creditor contact log, shared costs with ex-partner, and a das
 |---|---|
 | **Home** | Alerts, four key numbers, what's coming up in the next 14 days (with **Paid** buttons), where the money went (this month / last month / 3-month average), and a 12-month money in vs out chart |
 | **Insights** | 4-week balance forecast (bills + income + usual daily spending) with lowest point and safe-to-spend before next pay; bounced payments; bank fees and days overdrawn; subscriptions & repeat charges with **Add as bill**; bills that changed price; categories higher than usual; Afterpay/BNPL vs income; possible double charges |
-| **Budget** | Household / Michael / Taslyn: regular income against bills and debt repayments, what's left each month, and average everyday spending |
+| **Budget** | Household / Michael / Taslyn: regular income against bills and debt repayments, what's left each month, and average everyday spending. **Budget by category**: set a monthly limit per category and see this month's spending against it |
+| **Goals** | 1 · Buffer (cash on hand against a target you set) · 2 · Catch up on overdue amounts (clear-by date and the fortnightly amount needed) · 3 · Pay-down order (overdue first, then highest interest, then smallest balance; time to clear at the entered repayment) |
 | **Bills** | Regular payments including loan repayments: per-month totals, due in the next 5 weeks, the full list |
 | **Income** | Regular money coming in: per-month totals, expected in the next 5 weeks, the full list |
 | **Debts** | Who you owe (chart), repayments, overdue amounts, hardship status, and a call log per creditor |
@@ -26,7 +27,7 @@ debt register with creditor contact log, shared costs with ex-partner, and a das
 | **Report** | Statement of Financial Position for hardship calls and financial counsellors: quick answers panel (income, living costs, what's left for debts, shortfall, what you could offer, total owed), then household, income, living expenses (3-month average, grouped like hardship forms), debts with last contact and reference, assets, summary, and saved answers to the usual questions. Per week / fortnight / month; per person; **Copy as text**, **Print / PDF**, **CSV** |
 | Centrelink estimate (Income & Payslips pages) | Per person on JobSeeker: income Centrelink counts (board 70% minus their share of loan interest, wages from the latest payslip, other income), a progress bar against the $150 free area and the $0 cut-off, estimated payment, wages you can earn before it drops, and a 'what if I earn…' slider. Rates live in one table; set up per person on Household → Centrelink. Morning alert if counted income goes over the free area |
 | Links | Bank, debt, bill, government and help websites in one place, each tied to an account or debt: **Open**, then **Import CSV** (with how-to notes and how fresh the data is) or **Update balance**. One-tap suggested links; also shown on Import (Open bank) and Debts (Website). Stored with the household's settings; passwords are never stored |
-| Debts → Instalments still to pay | Dated instalments for Afterpay (merchant, amount, due date) grouped by week, with a paid tick; the Afterpay balance is the sum of what's unpaid |
+| Debts → Instalments still to pay | Dated instalments for Afterpay (merchant, amount, due date) grouped by week, with a paid tick; the Afterpay balance is the sum of what's unpaid. Bank payments are **auto-matched** (same amount, within 3 days, provider named) and ticked with an Undo |
 | Household | The people in the household (one login, any number of people): name, who they are, email, phone, notes. New accounts start with one person and a welcome form. The top switch shows Household or any one person; every bill, debt, account and tax year has a **Who pays** split — equal by default, or one person / custom % |
 | Import · Shared · Setup | **Scan a bill** (PDF or photo: biller, amount due, due date, billing period, BPAY code; only the last 4 of any reference kept; check it, then update the matching bill or add a new one) · statement import (CSV/PDF, multi-account), shared-cost ledger, settings/accounts/categories/rules |
 
@@ -89,10 +90,14 @@ Starter categories and ~30 auto-categorising rules are added automatically.
 - **Every import:** transactions sorted by rules; bills/income matched and due dates moved on; loan debts updated from the loan account balance.
 - **Every morning at 6am:** alerts on the dashboard for bills due within 3 days, bills not seen paid, income that hasn't arrived, overdrawn accounts, creditor follow-ups and hardship arrangements about to end.
 - **Also every morning, and after every import:** bounced direct debits (and the payment they reverse) are set aside so they don't count as income or spending, and the bill goes back to owing; bill amounts update when the bank shows a new price twice in a row; alerts for money likely to run short in the next 14 days, a payment that bounced, a possible double charge, and a category well above its usual month.
+- **Afterpay / Deferit matching** (every import, every morning, and when Debts opens): each due instalment is matched to one bank payment and ticked; a payment later bounced un-ticks it. Alerts: instalment not seen paid, payment not in your list, amount differs from the list. Only payments after the debt's `match_from` date are checked for 'not in your list'.
 - Bills and income marked "Auto-detected" were found from your transactions — edit or delete any that are wrong.
 
+## Display
+Dark mode: ☾/☀ button in the top bar (one tap); **Aa** menu has Light / Dark / Auto. New devices default to Auto (follows the phone).
+
 ## Coming next
-- **Stage 2:** goals screen (buffer → catch-up → pay-down), budget editor, debt payoff view.
+- **Stage 2 (rest):** budget-overspend alerts.
 - **Stage 3 (rest):** phone notifications, budget-overspend alerts, Google Drive drop-folder import.
 - **Stage 4:** cash-flow forecast to next payday; optional live bank feeds (Consumer Data Right provider).
 
