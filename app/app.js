@@ -1,11 +1,11 @@
 import { createClient } from 'https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2/+esm';
-import { SUPABASE_URL, SUPABASE_PUBLISHABLE_KEY } from './config.js?v=202611240145';
-import { parseBankCsv, parseWestpacActivity, parseLatitudeStatement, isLatitudeStatement, splitAccounts, linesFromItems } from './csv.js?v=202611240145';
-import { readPayslip, toLines } from './payslip.js?v=202611240145';
-import { readBill } from './bill.js?v=202611240145';
-import { parseAfterpay, parseDeferit, mergeRows, isKnown, shopKey, bestShopKey } from './bnpl.js?v=202611240145';
-import { toast, softDelete, busy, friendlyError, watchOnline, info, wireInfoTips, skeleton, wireInstall, applyPrefs, settingsMenu, prefs, setPref, store } from './ui.js?v=202611240145';
-import { columnChart, hbarChart, lineChart, SERIES, moneyRound, moneyCompact } from './charts.js?v=202611240145';
+import { SUPABASE_URL, SUPABASE_PUBLISHABLE_KEY } from './config.js?v=202611240200';
+import { parseBankCsv, parseWestpacActivity, parseLatitudeStatement, isLatitudeStatement, splitAccounts, linesFromItems } from './csv.js?v=202611240200';
+import { readPayslip, toLines } from './payslip.js?v=202611240200';
+import { readBill } from './bill.js?v=202611240200';
+import { parseAfterpay, parseDeferit, mergeRows, isKnown, shopKey, bestShopKey } from './bnpl.js?v=202611240200';
+import { toast, softDelete, busy, friendlyError, watchOnline, info, wireInfoTips, skeleton, wireInstall, applyPrefs, settingsMenu, prefs, setPref, store } from './ui.js?v=202611240200';
+import { columnChart, hbarChart, lineChart, SERIES, moneyRound, moneyCompact } from './charts.js?v=202611240200';
 
 const sb = createClient(SUPABASE_URL, SUPABASE_PUBLISHABLE_KEY);
 const $ = (s, el = document) => el.querySelector(s);
@@ -2243,6 +2243,7 @@ const RPT_QUESTIONS = [
   ['other_assets', 'Other assets', 'e.g. tools of trade, savings elsewhere — or none'],
   ['other', 'Anything else they should know', 'e.g. health, dependants, safety, other help already received'],
 ];
+let rptOff = new Set();   // categories switched off in the Report to see the impact (what-if only, not saved)
 let rptFreq = (() => { try { return localStorage.getItem('rptFreq') || 'fortnightly'; } catch { return 'fortnightly'; } })();
 const RPT_RANGES = [1, 2, 3, 6];
 let rptRange = (() => { try { const v = Number(localStorage.getItem('rptRange')); return RPT_RANGES.includes(v) ? v : 3; } catch { return 3; } })();
@@ -2314,7 +2315,7 @@ async function reportView() {
   if (extraFood > 0) { if (!exp.has('Food & groceries')) exp.set('Food & groceries', new Map()); exp.get('Food & groceries').set('Food paid another way (your estimate)', extraFood); }
   if (extraOther > 0) { if (!exp.has('Personal & other')) exp.set('Personal & other', new Map()); exp.get('Personal & other').set('Other costs paid another way (your estimate)', extraOther); }
   const foodFromBank = sum(txns.filter(t => t.amount < 0 && /grocer/i.test(cats.get(t.category_id)?.name || '')), t => -t.amount) / N;
-  const groups = EXP_GROUPS.map(([g]) => [g, exp.get(g)]).filter(([, m]) => m && m.size).map(([g, m]) => ({ g, total: sum([...m.values()], v => v), lines: [...m.entries()].sort((a, b) => b[1] - a[1]) }));
+  const groups = EXP_GROUPS.map(([g]) => [g, exp.get(g)]).filter(([, m]) => m && m.size).map(([g, m]) => ({ g, total: sum([...m.entries()].filter(([n]) => !rptOff.has(n)), e => e[1]), lines: [...m.entries()].sort((a, b) => b[1] - a[1]) }));
   const livingM = sum(groups, x => x.total);
 
   // month by month: money in, living spending, left over (same exclusions as above: transfers, bounced, debt repayments)
@@ -2324,7 +2325,7 @@ async function reportView() {
     for (const t of list) {
       const c = cats.get(t.category_id);
       if (t.amount > 0) { if (c?.kind !== 'transfer') inn += t.amount * shareFor(t.recurring_item_id ? itemSplit.get(t.recurring_item_id) : acctSplit(t.account_id), who); }
-      else if (!(c && (c.kind === 'transfer' || c.kind === 'income' || DEBT_CATS.test(c.name)))) out += -t.amount * shareFor(t.recurring_item_id ? itemSplit.get(t.recurring_item_id) : cache.settings?.default_split, who);
+      else if (!(c && (c.kind === 'transfer' || c.kind === 'income' || DEBT_CATS.test(c.name) || rptOff.has(c.name)))) out += -t.amount * shareFor(t.recurring_item_id ? itemSplit.get(t.recurring_item_id) : cache.settings?.default_split, who);
     }
     return { key, inn, out, left: inn - out };
   };
@@ -2398,7 +2399,8 @@ async function reportView() {
     </details>
 
     <details class="card rpt" open><summary><h2>3. Living expenses <span class="rpt-total">${M(livingM)} ${per}</span></h2></summary>
-      ${groups.length ? `<table class="list rpt-tbl"><tbody>${groups.map(g => `<tr class="grp"><td><b>${esc(g.g)}</b></td><td class="num"><b>${M(g.total)}</b></td></tr>${g.lines.map(([n, v]) => `<tr class="sub"><td>${esc(n.replace(' (not counted)', ''))}</td><td class="num">${M(v)}</td></tr>`).join('')}`).join('')}</tbody>
+      ${rptOff.size ? `<div class="callout no-print-hide">${rptOff.size} categor${rptOff.size === 1 ? 'y is' : 'ies are'} switched off, so every figure on this page leaves ${rptOff.size === 1 ? 'it' : 'them'} out. <button class="small" id="rp-reset">Switch all back on</button></div>` : ''}
+      ${groups.length ? `<table class="list rpt-tbl"><tbody>${groups.map(g => `<tr class="grp"><td><label class="rpt-chk"><input type="checkbox" data-grp="${esc(g.g)}" ${g.lines.every(([n]) => rptOff.has(n)) ? '' : 'checked'} aria-label="Count all of ${esc(g.g)}"> <b>${esc(g.g)}</b></label></td><td class="num"><b>${M(g.total)}</b></td></tr>${g.lines.map(([n, v]) => `<tr class="sub ${rptOff.has(n) ? 'off' : ''}"><td><label class="rpt-chk"><input type="checkbox" data-cat="${esc(n)}" ${rptOff.has(n) ? '' : 'checked'} aria-label="Count ${esc(n)}"> ${esc(n.replace(' (not counted)', ''))}</label></td><td class="num">${M(v)}</td></tr>`).join('')}`).join('')}</tbody>
         <tfoot><tr class="total"><td><b>Total living expenses</b></td><td class="num"><b>${M(livingM)}</b></td></tr></tfoot></table>
         ${foodFromBank < 80 * 52 / 12 && !extraFood ? `<div class="callout">Groceries from the bank are only about ${moneyRound(foodFromBank * 12 / 52)} a week for the household. If food is bought with Afterpay, cash or a card that isn’t in the app, put a realistic weekly amount in <b>Your answers</b> below — otherwise your living costs will look too low and the offer too high.</div>` : ''}
         <p class="hint">Average actually spent over ${N === 1 ? 'the last full month' : `the last ${N} full months`} (${esc(rangeTxt)}); the current month is left out because it is only part-way through. Mortgage, loans and Afterpay are in Debts below, not here.${sum(Object.values(bnplPaidM), v => v) > 0.5 ? ' Afterpay and Deferit shopping is counted here by what it was spent on (payments matched to a shop, plus the instalments still to pay, at the rate they are being paid off) and taken off the repayment shown for those debts, so nothing is counted twice.' : ''}${unsorted > 0.5 ? ` ${M(unsorted)} ${per} isn’t sorted into a category yet — sorting it on <b>To sort</b> makes this more accurate.` : ''}</p>`
@@ -2454,6 +2456,9 @@ async function reportView() {
         : '<p class="empty">No calls logged yet. After each call, add it on the Debts page → Calls.</p>'}
     </details>`;
 
+  view.querySelectorAll('input[data-cat]').forEach(c => c.onchange = () => { c.checked ? rptOff.delete(c.dataset.cat) : rptOff.add(c.dataset.cat); reportView(); });
+  view.querySelectorAll('input[data-grp]').forEach(c => c.onchange = () => { const g = groups.find(x => x.g === c.dataset.grp); g.lines.forEach(([n]) => c.checked ? rptOff.delete(n) : rptOff.add(n)); reportView(); });
+  $('#rp-reset')?.addEventListener('click', () => { rptOff.clear(); reportView(); });
   view.querySelectorAll('[data-rr]').forEach(b => b.onclick = () => { rptRange = Number(b.dataset.rr); try { localStorage.setItem('rptRange', rptRange); } catch {} reportView(); });
   view.querySelectorAll('[data-rf]').forEach(b => b.onclick = () => { rptFreq = b.dataset.rf; try { localStorage.setItem('rptFreq', rptFreq); } catch {} reportView(); });
   view.querySelectorAll('[data-go]').forEach(b => b.onclick = () => show(b.dataset.go));
@@ -2473,7 +2478,7 @@ async function reportView() {
     line('Housing', hasMortgage ? 'own home with a mortgage' : 'see notes');
     for (const [k, q] of RPT_QUESTIONS) if (notes[k]) line(q.replace(/\?$/, ''), notes[k]);
     L.push('', `INCOME ${M(incomeM)}`); income.forEach(x => line(`  ${x.name}`, M(x.m)));
-    L.push('', `LIVING EXPENSES ${M(livingM)}`); groups.forEach(g => line(`  ${g.g}`, M(g.total)));
+    L.push('', `LIVING EXPENSES ${M(livingM)}${rptOff.size ? ` (excluding: ${[...rptOff].join(', ')})` : ''}`); groups.forEach(g => line(`  ${g.g}`, M(g.total)));
     L.push('', `DEBTS ${money(debtTotal)} owed, repayments ${M(repM)}`); debts.forEach(d => line(`  ${d.creditor}`, `${money(d.bal)} owed${d.arr ? `, ${money(d.arr)} overdue` : ''}${d.repM ? `, repayment ${M(d.repM)}` : ''}${d.hardship_status && d.hardship_status !== 'none' ? `, hardship: ${label(d.hardship_status)}` : ''}`));
     L.push('', `MONTH BY MONTH (per ${F.label})`); months.forEach(r => line(`  ${monthName(r.d)}`, `in ${money(fx(r.inn))}, spent ${money(fx(r.out))}, left ${money(fx(r.left))}`));
     line('  Average', `in ${M(monthsTot.inn / N)}, spent ${M(monthsTot.out / N)}, left ${M((monthsTot.inn - monthsTot.out) / N)}`);
@@ -2486,7 +2491,7 @@ async function reportView() {
   $('#rp-csv').onclick = () => {
     const rows = [['Statement of financial position', who === 'all' ? 'Household' : whoName, fmtDate(today()), `per ${F.label}`], ['Averaged over', rangeTxt, `${N} full month${N > 1 ? 's' : ''}`], [],
       ['Income'], ...income.map(x => [x.name, x.whose, fx(x.m).toFixed(2)]), ['Total income', '', fx(incomeM).toFixed(2)], [],
-      ['Living expenses'], ...groups.flatMap(g => [[g.g, '', fx(g.total).toFixed(2)], ...g.lines.map(([n, v]) => ['', n, fx(v).toFixed(2)])]), ['Total living expenses', '', fx(livingM).toFixed(2)], [],
+      ['Living expenses'], ...groups.flatMap(g => [[g.g, '', fx(g.total).toFixed(2)], ...g.lines.filter(([n]) => !rptOff.has(n)).map(([n, v]) => ['', n, fx(v).toFixed(2)])]), ['Total living expenses', '', fx(livingM).toFixed(2)], ...(rptOff.size ? [['Excluded categories', [...rptOff].join('; ')]] : []), [],
       ['Month by month', 'Money in', 'Spending', 'Left over'], ...months.map(r => [monthName(r.d), fx(r.inn).toFixed(2), fx(r.out).toFixed(2), fx(r.left).toFixed(2)]),
       ['Average', fx(monthsTot.inn / N).toFixed(2), fx(monthsTot.out / N).toFixed(2), fx((monthsTot.inn - monthsTot.out) / N).toFixed(2)],
       ...(curRow ? [[`${monthName(curRow.d)} so far`, fx(curRow.inn).toFixed(2), fx(curRow.out).toFixed(2), fx(curRow.left).toFixed(2)]] : []), [],

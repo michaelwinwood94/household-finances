@@ -480,3 +480,7 @@ dialog.bnpl-dlg { max-width: 860px; }
 table.bnpl input { margin: 0; padding: .3rem .45rem; }
 table.bnpl .b-name { min-width: 11rem; } table.bnpl .b-amt { width: 6rem; text-align: right; } table.bnpl .b-date { min-width: 9.5rem; } table.bnpl select { margin: 0; padding: .3rem .4rem; min-width: 10rem; }
 table.bnpl tr.muted { opacity: .6; }
+.rpt-chk { display: inline-flex; gap: .5rem; align-items: center; font-weight: inherit; cursor: pointer; }
+.rpt-chk input { width: 1.1rem; height: 1.1rem; accent-color: var(--accent, #2a7); }
+tr.sub.off td { opacity: .45; text-decoration: line-through; }
+@media print { .rpt-chk input, .no-print-hide { display: none; } tr.sub.off { display: none; } }
