@@ -483,4 +483,8 @@ table.bnpl tr.muted { opacity: .6; }
 .rpt-chk { display: inline-flex; gap: .5rem; align-items: center; font-weight: inherit; cursor: pointer; }
 .rpt-chk input { width: 1.1rem; height: 1.1rem; accent-color: var(--accent, #2a7); }
 tr.sub.off td { opacity: .45; text-decoration: line-through; }
-@media print { .rpt-chk input, .no-print-hide { display: none; } tr.sub.off { display: none; } }
+.rpt-x { background: none; border: 0; padding: 0 .35rem 0 0; margin: 0; width: 1.2rem; color: var(--ink-2); cursor: pointer; font-size: .9rem; line-height: 1; }
+.rpt-x-sp { display: inline-block; width: 1.2rem; }
+tr.det td { padding-top: .1rem; padding-bottom: .1rem; font-size: .88rem; color: var(--ink-2); } tr.det td:first-child { padding-left: 3.2rem; }
+tr.det.off td { opacity: .45; text-decoration: line-through; }
+@media print { .rpt-x, .rpt-x-sp { display: none; } tr.det.off { display: none; } .rpt-chk input, .no-print-hide { display: none; } tr.sub.off { display: none; } }

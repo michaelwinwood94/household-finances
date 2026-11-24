@@ -1,11 +1,11 @@
 import { createClient } from 'https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2/+esm';
-import { SUPABASE_URL, SUPABASE_PUBLISHABLE_KEY } from './config.js?v=202611240530';
-import { parseBankCsv, parseWestpacActivity, parseScannedPdf, parseLatitudeStatement, isLatitudeStatement, splitAccounts, linesFromItems, parseBankPaste } from './csv.js?v=202611240530';
-import { readPayslip, toLines } from './payslip.js?v=202611240530';
-import { readBill } from './bill.js?v=202611240530';
-import { parseAfterpay, parseDeferit, mergeRows, isKnown, shopKey, bestShopKey, detectBnplPdf, parseBnplPdf, resolveTruncated, detectBnplPaste, parseBnplPaste } from './bnpl.js?v=202611240530';
-import { toast, softDelete, busy, friendlyError, watchOnline, info, wireInfoTips, skeleton, wireInstall, applyPrefs, settingsMenu, prefs, setPref, store } from './ui.js?v=202611240530';
-import { columnChart, hbarChart, lineChart, SERIES, moneyRound, moneyCompact } from './charts.js?v=202611240530';
+import { SUPABASE_URL, SUPABASE_PUBLISHABLE_KEY } from './config.js?v=202611240900';
+import { parseBankCsv, parseWestpacActivity, parseScannedPdf, parseLatitudeStatement, isLatitudeStatement, splitAccounts, linesFromItems, parseBankPaste } from './csv.js?v=202611240900';
+import { readPayslip, toLines } from './payslip.js?v=202611240900';
+import { readBill } from './bill.js?v=202611240900';
+import { cleanMerchant, parseAfterpay, parseDeferit, mergeRows, isKnown, shopKey, bestShopKey, detectBnplPdf, parseBnplPdf, resolveTruncated, detectBnplPaste, parseBnplPaste } from './bnpl.js?v=202611240900';
+import { toast, softDelete, busy, friendlyError, watchOnline, info, wireInfoTips, skeleton, wireInstall, applyPrefs, settingsMenu, prefs, setPref, store } from './ui.js?v=202611240900';
+import { columnChart, hbarChart, lineChart, SERIES, moneyRound, moneyCompact } from './charts.js?v=202611240900';
 
 const sb = createClient(SUPABASE_URL, SUPABASE_PUBLISHABLE_KEY);
 const $ = (s, el = document) => el.querySelector(s);
@@ -2342,6 +2342,7 @@ const RPT_QUESTIONS = [
   ['other_assets', 'Other assets', 'e.g. tools of trade, savings elsewhere — or none'],
   ['other', 'Anything else they should know', 'e.g. health, dependants, safety, other help already received'],
 ];
+let rptOpen = new Set();  // categories expanded in the Report to show what is in them
 let rptOff = new Set();   // categories switched off in the Report to see the impact (what-if only, not saved)
 let rptFreq = (() => { try { return localStorage.getItem('rptFreq') || 'fortnightly'; } catch { return 'fortnightly'; } })();
 const RPT_RANGES = [1, 2, 3, 6];
@@ -2357,7 +2358,7 @@ async function reportView() {
     q(sb.from('debt_contacts').select('*').order('contact_date', { ascending: false }).limit(200)),
     q(sb.from('v_account_balances').select('*').eq('is_active', true)),
     sb.rpc('insights', { p_days: 28 }).then(r => r.data).catch(() => null),
-    q(sb.from('debt_instalments').select('debt_id, amount, due_date, category_id').eq('is_paid', false).range(0, 4999)),
+    q(sb.from('debt_instalments').select('debt_id, amount, due_date, category_id, merchant').eq('is_paid', false).range(0, 4999)),
   ]);
   const txns = allTxns.filter(t => t.txn_date < m1), curTxns = allTxns.filter(t => t.txn_date >= m1);
   const notes = { ...(cache.settings?.report || {}) };
@@ -2376,6 +2377,12 @@ async function reportView() {
 
   // living expenses: actual average of the last N full months (the range picker), grouped like a hardship form (debt repayments are listed separately)
   const exp = new Map();
+  const detail = new Map();   // category -> what is in it: label -> { n, v (per month) }, shown when a Report row is expanded
+  const addDetail = (cat, label, v) => { if (!detail.has(cat)) detail.set(cat, new Map()); const m = detail.get(cat), d = m.get(label) || { n: 0, v: 0 }; d.n++; d.v += v; m.set(label, d); };
+  const tidy = raw => { let s = String(raw || '').replace(/^(?:DEBIT CARD PURCHASE|EFTPOS DEBIT|VISA (?:DEBIT )?PURCHASE|DIRECT DEBIT|PAYMENT BY AUTHORITY TO|WITHDRAWAL(?:-OSKO PAYMENT| MOBILE)?|DEPOSIT(?:-OSKO PAYMENT| ONLINE)?)\s*/i, '');
+    s = s.replace(/\\.*$/, '').replace(/\b\d{4,}[A-Za-z0-9]*\b|\b\d{1,2}\/\d{1,2}\b|\bAUS?\b|\bClick for details\b|^WL\b/gi, ' ').replace(/[*]+/g, ' ').replace(/\s+/g, ' ').trim();
+    const w = s.split(' ').filter((x, k, a) => k === 0 || x.toLowerCase() !== a[k - 1].toLowerCase());
+    return cleanMerchant(w.slice(0, 3).join(' ')) || 'Other'; };
   const bnplPaidM = {};   // Afterpay/Deferit payments now sitting in living-cost categories, per month by provider
   let unsorted = 0;
   for (const t of txns) {
@@ -2384,7 +2391,8 @@ async function reportView() {
     if (c && (c.kind === 'transfer' || c.kind === 'income' || DEBT_CATS.test(c.name))) continue;
     const share = shareFor(t.recurring_item_id ? itemSplit.get(t.recurring_item_id) : cache.settings?.default_split, who);
     const amt = -t.amount * share / N;
-    if (!c) { unsorted += amt; continue; }
+    if (!c) { unsorted += amt; addDetail('Not yet sorted', tidy(t.description), amt); continue; }
+    addDetail(c.name, /afterpay|deferit/i.test(t.description || '') ? `${/afterpay/i.test(t.description) ? 'Afterpay' : 'Deferit'} payments from the bank` : tidy(t.description), amt);
     const bp = /afterpay|deferit/i.exec(t.description || ''); if (bp) bnplPaidM[bp[0].toLowerCase()] = (bnplPaidM[bp[0].toLowerCase()] || 0) + amt;
     const g = EXP_GROUPS.find(([, re]) => re.test(c.name))[0];
     if (!exp.has(g)) exp.set(g, new Map());
@@ -2405,6 +2413,7 @@ async function reportView() {
       if (!exp.has(g)) exp.set(g, new Map());
       exp.get(g).set(c.name, (exp.get(g).get(c.name) || 0) + amt);
       const pv = provOf.get(i.debt_id); if (pv) bnplPaidM[pv] = (bnplPaidM[pv] || 0) + amt;
+      addDetail(c.name, `${cleanMerchant(i.merchant) || 'Shop'} — still to pay on ${(provOf.get(i.debt_id) || 'BNPL').replace(/^./, x => x.toUpperCase())}`, amt);
       instM += amt;
     }
   }
@@ -2499,7 +2508,7 @@ async function reportView() {
 
     <details class="card rpt" open><summary><h2>3. Living expenses <span class="rpt-total">${M(livingM)} ${per}</span></h2></summary>
       ${rptOff.size ? `<div class="callout no-print-hide">${rptOff.size} categor${rptOff.size === 1 ? 'y is' : 'ies are'} switched off, so every figure on this page leaves ${rptOff.size === 1 ? 'it' : 'them'} out. <button class="small" id="rp-reset">Switch all back on</button></div>` : ''}
-      ${groups.length ? `<table class="list rpt-tbl"><tbody>${groups.map(g => `<tr class="grp"><td><label class="rpt-chk"><input type="checkbox" data-grp="${esc(g.g)}" ${g.lines.every(([n]) => rptOff.has(n)) ? '' : 'checked'} aria-label="Count all of ${esc(g.g)}"> <b>${esc(g.g)}</b></label></td><td class="num"><b>${M(g.total)}</b></td></tr>${g.lines.map(([n, v]) => `<tr class="sub ${rptOff.has(n) ? 'off' : ''}"><td><label class="rpt-chk"><input type="checkbox" data-cat="${esc(n)}" ${rptOff.has(n) ? '' : 'checked'} aria-label="Count ${esc(n)}"> ${esc(n.replace(' (not counted)', ''))}</label></td><td class="num">${M(v)}</td></tr>`).join('')}`).join('')}</tbody>
+      ${groups.length ? `<table class="list rpt-tbl"><tbody>${groups.map(g => `<tr class="grp"><td><label class="rpt-chk"><input type="checkbox" data-grp="${esc(g.g)}" ${g.lines.every(([n]) => rptOff.has(n)) ? '' : 'checked'} aria-label="Count all of ${esc(g.g)}"> <b>${esc(g.g)}</b></label></td><td class="num"><b>${M(g.total)}</b></td></tr>${g.lines.map(([n, v]) => `<tr class="sub ${rptOff.has(n) ? 'off' : ''}"><td>${detail.has(n) ? `<button class="rpt-x" data-x="${esc(n)}" aria-expanded="${rptOpen.has(n)}" aria-label="Show what is in ${esc(n)}">${rptOpen.has(n) ? '▾' : '▸'}</button>` : '<span class="rpt-x-sp"></span>'}<label class="rpt-chk"><input type="checkbox" data-cat="${esc(n)}" ${rptOff.has(n) ? '' : 'checked'} aria-label="Count ${esc(n)}"> ${esc(n.replace(' (not counted)', ''))}</label></td><td class="num">${M(v)}</td></tr>${rptOpen.has(n) && detail.has(n) ? (l => l.slice(0, 12).map(([lab, d]) => `<tr class="det ${rptOff.has(n) ? 'off' : ''}"><td>${esc(lab)} <span class="hint">${d.n > 1 ? d.n + ' items' : '1 item'}</span></td><td class="num">${M(d.v)}</td></tr>`).join('') + (l.length > 12 ? `<tr class="det"><td class="hint">+ ${l.length - 12} smaller</td><td class="num">${M(sum(l.slice(12), e => e[1].v))}</td></tr>` : ''))([...detail.get(n).entries()].sort((a, b) => b[1].v - a[1].v)) : ''}`).join('')}`).join('')}</tbody>
         <tfoot><tr class="total"><td><b>Total living expenses</b></td><td class="num"><b>${M(livingM)}</b></td></tr></tfoot></table>
         ${foodFromBank < 80 * 52 / 12 && !extraFood ? `<div class="callout">Groceries from the bank are only about ${moneyRound(foodFromBank * 12 / 52)} a week for the household. If food is bought with Afterpay, cash or a card that isn’t in the app, put a realistic weekly amount in <b>Your answers</b> below — otherwise your living costs will look too low and the offer too high.</div>` : ''}
         <p class="hint">Average actually spent over ${N === 1 ? 'the last full month' : `the last ${N} full months`} (${esc(rangeTxt)}); the current month is left out because it is only part-way through. Mortgage, loans and Afterpay are in Debts below, not here.${sum(Object.values(bnplPaidM), v => v) > 0.5 ? ' Afterpay and Deferit shopping is counted here by what it was spent on (payments matched to a shop, plus the instalments still to pay, at the rate they are being paid off) and taken off the repayment shown for those debts, so nothing is counted twice.' : ''}${unsorted > 0.5 ? ` ${M(unsorted)} ${per} isn’t sorted into a category yet — sorting it on <b>To sort</b> makes this more accurate.` : ''}</p>`
@@ -2555,6 +2564,7 @@ async function reportView() {
         : '<p class="empty">No calls logged yet. After each call, add it on the Debts page → Calls.</p>'}
     </details>`;
 
+  view.querySelectorAll('button[data-x]').forEach(b => b.onclick = () => { rptOpen.has(b.dataset.x) ? rptOpen.delete(b.dataset.x) : rptOpen.add(b.dataset.x); reportView(); });
   view.querySelectorAll('input[data-cat]').forEach(c => c.onchange = () => { c.checked ? rptOff.delete(c.dataset.cat) : rptOff.add(c.dataset.cat); reportView(); });
   view.querySelectorAll('input[data-grp]').forEach(c => c.onchange = () => { const g = groups.find(x => x.g === c.dataset.grp); g.lines.forEach(([n]) => c.checked ? rptOff.delete(n) : rptOff.add(n)); reportView(); });
   $('#rp-reset')?.addEventListener('click', () => { rptOff.clear(); reportView(); });
