@@ -1,11 +1,11 @@
 import { createClient } from 'https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2/+esm';
-import { SUPABASE_URL, SUPABASE_PUBLISHABLE_KEY } from './config.js?v=202611241100';
-import { parseBankCsv, parseWestpacActivity, parseScannedPdf, parseLatitudeStatement, isLatitudeStatement, splitAccounts, linesFromItems, parseBankPaste } from './csv.js?v=202611241100';
-import { readPayslip, toLines } from './payslip.js?v=202611241100';
-import { readBill } from './bill.js?v=202611241100';
-import { cleanMerchant, parseAfterpay, parseDeferit, mergeRows, isKnown, shopKey, bestShopKey, detectBnplPdf, parseBnplPdf, resolveTruncated, detectBnplPaste, parseBnplPaste } from './bnpl.js?v=202611241100';
-import { toast, softDelete, busy, friendlyError, watchOnline, info, wireInfoTips, skeleton, wireInstall, applyPrefs, settingsMenu, prefs, setPref, store } from './ui.js?v=202611241100';
-import { columnChart, hbarChart, lineChart, SERIES, moneyRound, moneyCompact } from './charts.js?v=202611241100';
+import { SUPABASE_URL, SUPABASE_PUBLISHABLE_KEY } from './config.js?v=202611241120';
+import { parseBankCsv, parseWestpacActivity, parseScannedPdf, parseLatitudeStatement, isLatitudeStatement, splitAccounts, linesFromItems, parseBankPaste } from './csv.js?v=202611241120';
+import { readPayslip, toLines } from './payslip.js?v=202611241120';
+import { readBill } from './bill.js?v=202611241120';
+import { cleanMerchant, parseAfterpay, parseDeferit, mergeRows, isKnown, shopKey, bestShopKey, detectBnplPdf, parseBnplPdf, resolveTruncated, detectBnplPaste, parseBnplPaste } from './bnpl.js?v=202611241120';
+import { toast, softDelete, busy, friendlyError, watchOnline, info, wireInfoTips, skeleton, wireInstall, applyPrefs, settingsMenu, prefs, setPref, store } from './ui.js?v=202611241120';
+import { columnChart, hbarChart, lineChart, SERIES, moneyRound, moneyCompact } from './charts.js?v=202611241120';
 
 const sb = createClient(SUPABASE_URL, SUPABASE_PUBLISHABLE_KEY);
 const $ = (s, el = document) => el.querySelector(s);
@@ -2471,7 +2471,7 @@ async function reportView() {
   const extraOther = Number(notes.extra_other_weekly || 0) * 52 / 12 * shareFor(cache.settings?.default_split, who);
   if (extraFood > 0) { if (!exp.has('Food & groceries')) exp.set('Food & groceries', new Map()); exp.get('Food & groceries').set('Food paid another way (your estimate)', extraFood); }
   if (extraOther > 0) { if (!exp.has('Personal & other')) exp.set('Personal & other', new Map()); exp.get('Personal & other').set('Other costs paid another way (your estimate)', extraOther); }
-  const foodFromBank = sum(txns.filter(t => t.amount < 0 && /grocer/i.test(cats.get(t.category_id)?.name || '')), t => -t.amount) / N;
+  const foodFromBank = sum([...(exp.get('Food & groceries') || new Map())].filter(([n]) => /grocer/i.test(n) && !/your estimate/i.test(n)), e => e[1]);   // all grocery spending counted above, Afterpay/Deferit shopping included
   const groups = EXP_GROUPS.map(([g]) => [g, exp.get(g)]).filter(([, m]) => m && m.size).map(([g, m]) => ({ g, total: sum([...m.entries()].filter(([n]) => !rptOff.has(n)), e => e[1]), lines: [...m.entries()].sort((a, b) => b[1] - a[1]) }));
   const livingM = sum(groups, x => x.total);
 
@@ -2562,7 +2562,7 @@ async function reportView() {
       ${oneOffs.length ? `<div class="callout no-print-hide"><b>${oneOffs.length} one-off purchase${oneOffs.length === 1 ? '' : 's'} of $${ONEOFF}+ ${rptOne ? 'included in' : 'left out of'} the figures</b> (${M(oneOffM)}${per} if counted): ${oneOffs.sort((a, b) => b.amt - a.amt).slice(0, 6).map(o => `${esc(tidy(o.t.description))} ${esc(fmtDate(o.t.txn_date))} ${money(-o.t.amount)}`).join(' · ')}${oneOffs.length > 6 ? ` · +${oneOffs.length - 6} more` : ''}. <button class="small" id="rp-one">${rptOne ? 'Leave them out' : 'Include them'}</button></div>` : ''}
       ${groups.length ? `<table class="list rpt-tbl"><tbody>${groups.map(g => `<tr class="grp"><td><label class="rpt-chk"><input type="checkbox" data-grp="${esc(g.g)}" ${g.lines.every(([n]) => rptOff.has(n)) ? '' : 'checked'} aria-label="Count all of ${esc(g.g)}"> <b>${esc(g.g)}</b></label></td><td class="num"><b>${M(g.total)}</b></td></tr>${g.lines.map(([n, v]) => `<tr class="sub ${rptOff.has(n) ? 'off' : ''}"><td>${detail.has(n) ? `<button class="rpt-x" data-x="${esc(n)}" aria-expanded="${rptOpen.has(n)}" aria-label="Show what is in ${esc(n)}">${rptOpen.has(n) ? '▾' : '▸'}</button>` : '<span class="rpt-x-sp"></span>'}<label class="rpt-chk"><input type="checkbox" data-cat="${esc(n)}" ${rptOff.has(n) ? '' : 'checked'} aria-label="Count ${esc(n)}"> ${esc(n.replace(' (not counted)', ''))}</label></td><td class="num">${M(v)}</td></tr>${rptOpen.has(n) && detail.has(n) ? (l => l.slice(0, 12).map(([lab, d]) => `<tr class="det ${rptOff.has(n) ? 'off' : ''}"><td>${esc(lab)} <span class="hint">${d.n > 1 ? d.n + ' items' : '1 item'}</span></td><td class="num">${M(d.v)}</td></tr>`).join('') + (l.length > 12 ? `<tr class="det"><td class="hint">+ ${l.length - 12} smaller</td><td class="num">${M(sum(l.slice(12), e => e[1].v))}</td></tr>` : ''))([...detail.get(n).entries()].sort((a, b) => b[1].v - a[1].v)) : ''}`).join('')}`).join('')}</tbody>
         <tfoot><tr class="total"><td><b>Total living expenses</b></td><td class="num"><b>${M(livingM)}</b></td></tr></tfoot></table>
-        ${foodFromBank < 80 * 52 / 12 && !extraFood ? `<div class="callout">Groceries from the bank are only about ${moneyRound(foodFromBank * 12 / 52)} a week for the household. If food is bought with Afterpay, cash or a card that isn’t in the app, put a realistic weekly amount in <b>Your answers</b> below — otherwise your living costs will look too low and the offer too high.</div>` : ''}
+        ${foodFromBank < 80 * 52 / 12 && !extraFood ? `<div class="callout">Groceries in the app are only about ${moneyRound(foodFromBank * 12 / 52)} a week for the household. If food is also bought with cash or a card that isn’t in the app, put a realistic weekly amount in <b>Your answers</b> below — otherwise your living costs will look too low and the offer too high.</div>` : ''}
         <p class="hint">Average actually spent over ${N === 1 ? 'the last full month' : `the last ${N} full months`} (${esc(rangeTxt)}); the current month is left out because it is only part-way through. Mortgage, loans and Afterpay are in Debts below, not here.${sum(Object.values(bnplPaidM), v => v) > 0.5 ? ' Afterpay and Deferit shopping is counted here by what it was spent on: each purchase still being paid off counts once at its full price, spread over the 6 weeks the instalments run (so about 6 weeks of buying), and the amount is taken off the repayment shown for those debts, so nothing is counted twice.' : ''}${unsorted > 0.5 ? ` ${M(unsorted)} ${per} isn’t sorted into a category yet — sorting it on <b>To sort</b> makes this more accurate.` : ''}</p>`
         : '<p class="empty">No spending in this period yet — import your statements.</p>'}
       <h3 style="margin-top:1.25rem">Month by month</h3>
