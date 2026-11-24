@@ -1,0 +1,2 @@
+-- Applied live: Report now follows the standard hardship-form lines; new spending categories Clothing and Entertainment (added for every owner that has categories).
+-- The Report maps existing categories to form lines by name (Gaming, Subscriptions, Apple / app purchases -> Entertainment), so no transactions were changed.

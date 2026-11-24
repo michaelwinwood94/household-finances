@@ -1,11 +1,11 @@
 import { createClient } from 'https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2/+esm';
-import { SUPABASE_URL, SUPABASE_PUBLISHABLE_KEY } from './config.js?v=202611241140';
-import { parseBankCsv, parseWestpacActivity, parseScannedPdf, parseLatitudeStatement, isLatitudeStatement, splitAccounts, linesFromItems, parseBankPaste } from './csv.js?v=202611241140';
-import { readPayslip, toLines } from './payslip.js?v=202611241140';
-import { readBill } from './bill.js?v=202611241140';
-import { cleanMerchant, parseAfterpay, parseDeferit, mergeRows, isKnown, shopKey, bestShopKey, detectBnplPdf, parseBnplPdf, resolveTruncated, detectBnplPaste, parseBnplPaste } from './bnpl.js?v=202611241140';
-import { toast, softDelete, busy, friendlyError, watchOnline, info, wireInfoTips, skeleton, wireInstall, applyPrefs, settingsMenu, prefs, setPref, store } from './ui.js?v=202611241140';
-import { columnChart, hbarChart, lineChart, SERIES, moneyRound, moneyCompact } from './charts.js?v=202611241140';
+import { SUPABASE_URL, SUPABASE_PUBLISHABLE_KEY } from './config.js?v=202611241200';
+import { parseBankCsv, parseWestpacActivity, parseScannedPdf, parseLatitudeStatement, isLatitudeStatement, splitAccounts, linesFromItems, parseBankPaste } from './csv.js?v=202611241200';
+import { readPayslip, toLines } from './payslip.js?v=202611241200';
+import { readBill } from './bill.js?v=202611241200';
+import { cleanMerchant, parseAfterpay, parseDeferit, mergeRows, isKnown, shopKey, bestShopKey, detectBnplPdf, parseBnplPdf, resolveTruncated, detectBnplPaste, parseBnplPaste } from './bnpl.js?v=202611241200';
+import { toast, softDelete, busy, friendlyError, watchOnline, info, wireInfoTips, skeleton, wireInstall, applyPrefs, settingsMenu, prefs, setPref, store } from './ui.js?v=202611241200';
+import { columnChart, hbarChart, lineChart, SERIES, moneyRound, moneyCompact } from './charts.js?v=202611241200';
 
 const sb = createClient(SUPABASE_URL, SUPABASE_PUBLISHABLE_KEY);
 const $ = (s, el = document) => el.querySelector(s);
@@ -2322,15 +2322,23 @@ async function shared() {
 
 // ---------- REPORT: Statement of Financial Position for hardship calls & financial counsellors ----------
 const RPT_FREQ = { weekly: { label: 'week', f: 12 / 52 }, fortnightly: { label: 'fortnight', f: 12 / 26 }, monthly: { label: 'month', f: 1 } };
+// lines follow the standard hardship forms (ABA / lender "financial hardship information" forms); first match wins, so order matters
 const EXP_GROUPS = [
-  ['Housing & utilities', /rates|water|power|electric|gas\b|strata|body corp|rent(?! received)|repair|maintenance|home/i],
-  ['Phone & internet', /phone|internet|mobile|nbn/i],
+  ['Rent & home upkeep', /rent(?! received)|strata|body corp|repair|maintenance/i],
+  ['Council rates', /rates/i],
+  ['Electricity', /power|electric/i],
+  ['Gas', /gas\b/i],
+  ['Water', /water/i],
   ['Food & groceries', /grocer|takeaway|eating|food|meal/i],
-  ['Transport', /fuel|car cost|transport|rego|registration|parking|toll|petrol/i],
-  ['Insurance', /insurance/i],
+  ['Clothing', /cloth|shoes|apparel/i],
   ['Medical & health', /medical|pharmacy|health|doctor|dental|chemist/i],
-  ['Children & education', /kid|child|school|education|daycare/i],
-  ['Personal & other', /.*/],
+  ['Insurance', /insurance/i],
+  ['Car running costs', /fuel|petrol|car cost|rego|registration/i],
+  ['Travel & transport', /transport|parking|toll|travel|bus\b|train|taxi|uber/i],
+  ['Phone & internet', /phone|internet|mobile|nbn/i],
+  ['School & children', /kid|child|school|education|daycare/i],
+  ['Entertainment', /gaming|game|subscription|apple|entertain|streaming|cinema|hobby/i],
+  ['Other', /.*/],
 ];
 const DEBT_CATS = /mortgage|bnpl|afterpay|debt|loan|latitude|credit card|zip/i;
 const RPT_QUESTIONS = [
@@ -2468,11 +2476,11 @@ async function reportView() {
     addDetail(c.name, `${i.name} — paid ${i.frequency === 'bimonthly' ? 'every 2 months' : i.frequency}, spread evenly`, amt);
   }
   const oneOffM = sum(oneOffs, o => o.amt);
-  if (unsorted > 0.5) { if (!exp.has('Personal & other')) exp.set('Personal & other', new Map()); exp.get('Personal & other').set('Not yet sorted', unsorted); }
+  if (unsorted > 0.5) { if (!exp.has('Other')) exp.set('Other', new Map()); exp.get('Other').set('Not yet sorted', unsorted); }
   const extraFood = Number(notes.extra_food_weekly || 0) * 52 / 12 * shareFor(cache.settings?.default_split, who);
   const extraOther = Number(notes.extra_other_weekly || 0) * 52 / 12 * shareFor(cache.settings?.default_split, who);
   if (extraFood > 0) { if (!exp.has('Food & groceries')) exp.set('Food & groceries', new Map()); exp.get('Food & groceries').set('Food paid another way (your estimate)', extraFood); }
-  if (extraOther > 0) { if (!exp.has('Personal & other')) exp.set('Personal & other', new Map()); exp.get('Personal & other').set('Other costs paid another way (your estimate)', extraOther); }
+  if (extraOther > 0) { if (!exp.has('Other')) exp.set('Other', new Map()); exp.get('Other').set('Other costs paid another way (your estimate)', extraOther); }
   const foodFromBank = sum([...(exp.get('Food & groceries') || new Map())].filter(([n]) => /grocer/i.test(n) && !/your estimate/i.test(n)), e => e[1]);   // all grocery spending counted above, Afterpay/Deferit shopping included
   const groups = EXP_GROUPS.map(([g]) => [g, exp.get(g)]).filter(([, m]) => m && m.size).map(([g, m]) => ({ g, total: sum([...m.entries()].filter(([n]) => !rptOff.has(n)), e => e[1]), lines: [...m.entries()].sort((a, b) => b[1] - a[1]) }));
   const livingM = sum(groups, x => x.total);
@@ -2527,10 +2535,10 @@ async function reportView() {
       <dl class="qa">
         <dt>Total income</dt><dd>${M(incomeM)} ${per}</dd>
         <dt>Income actually received <span class="hint">(average, ${N === 1 ? 'last month' : `last ${N} months`})</span></dt><dd>${M(actualInM)} ${per}</dd>
-        <dt>Living expenses (not counting debt repayments)</dt><dd>${M(livingM)} ${per}</dd>
-        <dt>Left for debts after living costs</dt><dd class="${available < 0 ? 'neg' : ''}">${M(available)} ${per}</dd>
-        <dt>Debt repayments you’re meant to make</dt><dd>${M(repM)} ${per}</dd>
-        <dt>${after < 0 ? 'Shortfall' : 'Left over'} after all repayments</dt><dd class="${after < 0 ? 'neg' : 'pos'}">${M(after)} ${per}</dd>
+        <dt>Total living expenses <span class="hint">(before debt repayments)</span></dt><dd>${M(livingM)} ${per}</dd>
+        <dt>Total income less total living expenses <span class="hint">(before repayments)</span></dt><dd class="${available < 0 ? 'neg' : ''}">${M(available)} ${per}</dd>
+        <dt>Less current repayments being made</dt><dd>${M(repM)} ${per}</dd>
+        <dt>${after < 0 ? 'Shortfall' : 'Surplus'} after repayments</dt><dd class="${after < 0 ? 'neg' : 'pos'}">${M(after)} ${per}</dd>
         <dt>What you could offer this creditor</dt><dd>${available > 0 ? `Up to ${M(available)} ${per} <span class="hint">across <b>all</b> your debts combined — share it fairly, essentials first</span>` : '<b>Nothing right now</b> <span class="hint">— income doesn’t cover living costs; ask for a pause</span>'}</dd>
         <dt>Total owed</dt><dd>${money(debtTotal)} <span class="hint">· ${debts.length} debt${debts.length === 1 ? '' : 's'}${arrTotal ? ` · ${money(arrTotal)} overdue` : ''}</span></dd>
         <dt>Money in the bank</dt><dd>${money(cashTotal)}</dd>
@@ -2596,9 +2604,9 @@ async function reportView() {
     <details class="card rpt" open><summary><h2>6. Summary</h2></summary>
       <table class="list rpt-tbl"><tbody>
         <tr><td>Total income</td><td class="num">${M(incomeM)}</td></tr>
-        <tr><td>less living expenses</td><td class="num">− ${M(livingM)}</td></tr>
-        <tr class="total"><td><b>Available for debt repayments</b></td><td class="num"><b class="${available < 0 ? 'neg' : ''}">${M(available)}</b></td></tr>
-        <tr><td>less current debt repayments</td><td class="num">− ${M(repM)}</td></tr>
+        <tr><td>Total living expenses</td><td class="num">− ${M(livingM)}</td></tr>
+        <tr class="total"><td><b>Total income less total living expenses (before repayments)</b></td><td class="num"><b class="${available < 0 ? 'neg' : ''}">${M(available)}</b></td></tr>
+        <tr><td>Less current repayments being made</td><td class="num">− ${M(repM)}</td></tr>
         <tr class="total"><td><b>${after < 0 ? 'Shortfall' : 'Surplus'}</b></td><td class="num"><b class="${after < 0 ? 'neg' : 'pos'}">${M(after)}</b></td></tr>
       </tbody></table><p class="hint">All amounts per ${F.label}.</p>
     </details>
@@ -2648,7 +2656,7 @@ async function reportView() {
     line('  Average', `in ${M(monthsTot.inn / N)}, spent ${M(monthsTot.out / N)}, left ${M((monthsTot.inn - monthsTot.out) / N)}`);
     if (curRow) line(`  ${monthName(curRow.d)} so far`, `in ${money(fx(curRow.inn))}, spent ${money(fx(curRow.out))}`);
     L.push('', `ASSETS`); cash.forEach(a => line(`  ${a.name}`, money(a.v)));
-    L.push('', 'SUMMARY'); line('  Income', M(incomeM)); line('  Living expenses', M(livingM)); line('  Available for debts', M(available)); line('  Current repayments', M(repM)); line(`  ${after < 0 ? 'Shortfall' : 'Surplus'}`, M(after));
+    L.push('', 'SUMMARY'); line('  Income', M(incomeM)); line('  Total living expenses', M(livingM)); line('  Income less living expenses (before repayments)', M(available)); line('  Less current repayments being made', M(repM)); line(`  ${after < 0 ? 'Shortfall' : 'Surplus'}`, M(after));
     return L.join('\n');
   };
   $('#rp-copy').onclick = async () => { try { await navigator.clipboard.writeText(textReport()); toast('Copied — paste it into an email or form'); } catch { const w = window.open('', '_blank'); if (w) { w.document.body.innerText = textReport(); } } };
@@ -2661,7 +2669,7 @@ async function reportView() {
       ...(curRow ? [[`${monthName(curRow.d)} so far`, fx(curRow.inn).toFixed(2), fx(curRow.out).toFixed(2), fx(curRow.left).toFixed(2)]] : []), [],
       ['Debts', 'Balance', 'Overdue', 'Repayment', 'Hardship', 'Last contact', 'Reference'], ...debts.map(d => [d.creditor, d.bal.toFixed(2), d.arr.toFixed(2), fx(d.repM).toFixed(2), d.hardship_status || '', d.last?.contact_date || '', d.last?.reference_number || '']), [],
       ['Assets'], ...cash.map(a => [a.name, a.v.toFixed(2)]), ...['home_value', 'vehicles', 'super', 'other_assets'].map(k => [RPT_QUESTIONS.find(x => x[0] === k)[1], notes[k] || '']), [],
-      ['Available for debts', fx(available).toFixed(2)], ['Current repayments', fx(repM).toFixed(2)], [after < 0 ? 'Shortfall' : 'Surplus', fx(after).toFixed(2)], [],
+      ['Total income less total living expenses (before repayments)', fx(available).toFixed(2)], ['Less current repayments being made', fx(repM).toFixed(2)], [after < 0 ? 'Shortfall' : 'Surplus', fx(after).toFixed(2)], [],
       ...RPT_QUESTIONS.filter(([k]) => notes[k]).map(([k, q]) => [q, notes[k]])];
     const csv = rows.map(r => r.map(v => `"${String(v ?? '').replace(/"/g, '""')}"`).join(',')).join('\r\n');
     const a = document.createElement('a'); a.href = URL.createObjectURL(new Blob([csv], { type: 'text/csv' })); a.download = `financial-position-${today()}.csv`; a.click(); URL.revokeObjectURL(a.href);
