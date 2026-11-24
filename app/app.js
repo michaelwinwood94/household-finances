@@ -1,11 +1,11 @@
 import { createClient } from 'https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2/+esm';
-import { SUPABASE_URL, SUPABASE_PUBLISHABLE_KEY } from './config.js?v=202611241330';
-import { parseBankCsv, parseWestpacActivity, parseScannedPdf, parseLatitudeStatement, isLatitudeStatement, splitAccounts, linesFromItems, parseBankPaste } from './csv.js?v=202611241330';
-import { readPayslip, toLines } from './payslip.js?v=202611241330';
-import { readBill } from './bill.js?v=202611241330';
-import { cleanMerchant, parseAfterpay, parseDeferit, mergeRows, isKnown, shopKey, bestShopKey, detectBnplPdf, parseBnplPdf, resolveTruncated, detectBnplPaste, parseBnplPaste } from './bnpl.js?v=202611241330';
-import { toast, softDelete, busy, friendlyError, watchOnline, info, wireInfoTips, skeleton, wireInstall, applyPrefs, settingsMenu, prefs, setPref, store } from './ui.js?v=202611241330';
-import { columnChart, hbarChart, lineChart, SERIES, moneyRound, moneyCompact } from './charts.js?v=202611241330';
+import { SUPABASE_URL, SUPABASE_PUBLISHABLE_KEY } from './config.js?v=202611241400';
+import { parseBankCsv, parseWestpacActivity, parseScannedPdf, parseLatitudeStatement, isLatitudeStatement, splitAccounts, linesFromItems, parseBankPaste } from './csv.js?v=202611241400';
+import { readPayslip, toLines } from './payslip.js?v=202611241400';
+import { readBill } from './bill.js?v=202611241400';
+import { cleanMerchant, parseAfterpay, parseDeferit, mergeRows, isKnown, shopKey, bestShopKey, detectBnplPdf, parseBnplPdf, resolveTruncated, detectBnplPaste, parseBnplPaste } from './bnpl.js?v=202611241400';
+import { toast, softDelete, busy, friendlyError, watchOnline, info, wireInfoTips, skeleton, wireInstall, applyPrefs, settingsMenu, prefs, setPref, store } from './ui.js?v=202611241400';
+import { columnChart, hbarChart, lineChart, SERIES, moneyRound, moneyCompact } from './charts.js?v=202611241400';
 
 const sb = createClient(SUPABASE_URL, SUPABASE_PUBLISHABLE_KEY);
 const $ = (s, el = document) => el.querySelector(s);
@@ -567,7 +567,8 @@ async function dashboard() {
   const myCash = sum(cashAccts, a => Number(a.calculated_balance) * acctShare(a.id));
   const pName = personView === 'all' ? 'household' : personName();
   const splitOfItem = new Map(itemSplits.map(i => [i.item_id ?? i.id, i.split]));
-  const upShare = u => Number(u.amount) * shareFor(splitOfItem.get(u.item_id));
+  const upShare = u => Number(u.amount) * shareFor(u.pseudo ? u._split : splitOfItem.get(u.item_id));
+  upcoming = [...await arrearsRows(upcoming), ...upcoming];
   upcoming = upcoming.filter(u => upShare(u) > 0.004).map(u => ({ ...u, my_amount: upShare(u) }));
   const spendShare = shareFor(cache.settings?.default_split);
   const thisMonth = cash.find(c => c.month === monthStart) || {};
@@ -651,9 +652,9 @@ async function dashboard() {
           const d = daysFromToday(u.due_date);
           const when = u.overdue ? (u.direction === 'in' ? 'late' : 'overdue') : d === 0 ? 'today' : d === 1 ? 'tomorrow' : `in ${d} days`;
           return `<li class="${u.overdue ? 'is-late' : ''}"><div class="due-date"><b>${new Date(u.due_date + 'T00:00:00').getDate()}</b><span>${new Date(u.due_date + 'T00:00:00').toLocaleDateString('en-AU', { month: 'short' })}</span></div>
-            <div class="due-main"><b>${esc(u.name)}</b><div class="hint">${when}${u.debt_id ? ' · loan repayment' : ''}${u.is_shared ? ' · shared' : ''}</div></div>
+            <div class="due-main"><b>${esc(u.name)}</b><div class="hint">${when}${u.pseudo ? ' · arrears on the loan, see Debts' : u.debt_id ? ' · loan repayment' : ''}${u.is_shared ? ' · shared' : ''}</div></div>
             <div class="due-amt ${u.direction === 'in' ? 'in' : ''}">${u.direction === 'in' ? '+' : '−'}${money(u.my_amount)}</div>
-            ${u.direction === 'out' && d <= 7 ? `<button class="small mark-paid" data-id="${u.item_id}" data-due="${u.due_date}">Paid</button>` : '<span></span>'}</li>`; }).join('')}</ul>`
+            ${u.direction === 'out' && !u.pseudo && d <= 7 ? `<button class="small mark-paid" data-id="${u.item_id}" data-due="${u.due_date}">Paid</button>` : '<span></span>'}</li>`; }).join('')}</ul>`
           : '<p class="empty">Nothing due in the next 14 days.</p>'}
       </section>
       <details class="card fold" data-fold="spend"><summary><h2>Where the money went</h2><span class="fold-sum">This month out ${moneyRound(thisMonth.money_out || 0)}</span></summary>
@@ -1319,6 +1320,12 @@ async function importView() {
 // ---------- BILLS & INCOME ----------
 const UP_RANGES = [[7, '1 week'], [14, '2 weeks'], [35, '5 weeks'], [61, '2 months'], [92, '3 months'], [183, '6 months']];
 let upDays = (() => { try { const v = Number(localStorage.getItem('upDays')); return UP_RANGES.some(r => r[0] === v) ? v : 35; } catch { return 35; } })();
+// A debt with an overdue amount (arrears) but no overdue bill against it still has to show as overdue in the due lists
+async function arrearsRows(up) {
+  const ds = await q(sb.from('debts').select('id, creditor, arrears_amount, split').eq('status', 'active').gt('arrears_amount', 0));
+  const covered = new Set(up.filter(u => u.debt_id && u.overdue && u.direction === 'out').map(u => u.debt_id));
+  return ds.filter(d => !covered.has(d.id)).map(d => ({ item_id: null, pseudo: true, name: `${d.creditor} — overdue amount`, direction: 'out', amount: Number(d.arrears_amount), due_date: today(), overdue: true, debt_id: d.id, _split: d.split }));
+}
 async function recurringPage(kind) {
   const isBills = kind === 'bills';
   const dir = isBills ? 'out' : 'in';
@@ -1344,12 +1351,13 @@ async function recurringPage(kind) {
       q(sb.from('recurring_items').select('*').eq('direction', dir).eq('is_active', true)),
       q(sb.rpc('upcoming_items', { p_days: upDays })),
     ]);
+    if (isBills) up.unshift(...await arrearsRows(up));
     const items = itemsAll.filter(i => shareFor(i.split) > 0);
     const monthly = i => i.amount * PER_MONTH[i.frequency] * shareFor(i.split);
     const pm = sum(items, monthly);
     const allItems = await q(sb.from('recurring_items').select('id, split'));
     const splitOfItem = new Map(allItems.map(i => [i.id, i.split]));
-    const upShare = u => Number(u.amount) * shareFor(splitOfItem.get(u.item_id));
+    const upShare = u => Number(u.amount) * shareFor(u.pseudo ? u._split : splitOfItem.get(u.item_id));
     const mine = up.filter(u => u.direction === dir && upShare(u) > 0.004);
     const late = mine.filter(u => u.overdue);
     const pmFor = who => sum(itemsAll, i => i.amount * PER_MONTH[i.frequency] * shareFor(i.split, who));
@@ -1367,9 +1375,9 @@ async function recurringPage(kind) {
       const when = u.overdue ? (isBills ? 'overdue' : 'late') : d === 0 ? 'today' : d === 1 ? 'tomorrow' : `in ${d} days`;
       const part = upShare(u) < Number(u.amount) - 0.004 ? ` · share of ${money(u.amount)}` : '';
       return `<li class="${u.overdue ? 'is-late' : ''}"><div class="due-date"><b>${new Date(u.due_date + 'T00:00:00').getDate()}</b><span>${new Date(u.due_date + 'T00:00:00').toLocaleDateString('en-AU', { month: 'short' })}</span></div>
-        <div class="due-main"><b>${esc(u.name)}</b><div class="hint">${when}${u.debt_id ? ' · loan repayment' : ''}${part}</div></div>
+        <div class="due-main"><b>${esc(u.name)}</b><div class="hint">${when}${u.pseudo ? ' · arrears on the loan, see Debts' : u.debt_id ? ' · loan repayment' : ''}${part}</div></div>
         <div class="due-amt ${isBills ? '' : 'in'}">${money(upShare(u))}</div>
-        ${isBills && d <= 7 ? `<button class="small mark-paid" data-id="${u.item_id}" data-due="${u.due_date}">Paid</button>` : '<span></span>'}</li>`; }).join('')}</ul>
+        ${isBills && !u.pseudo && d <= 7 ? `<button class="small mark-paid" data-id="${u.item_id}" data-due="${u.due_date}">Paid</button>` : '<span></span>'}</li>`; }).join('')}</ul>
       <p class="hint total-line">Total ${money(sum(mine, upShare))}</p>` : `<p class="empty">Nothing in the next ${esc(UP_RANGES.find(r => r[0] === upDays)[1])}.</p>`;
     $('#r-up').querySelectorAll('.mark-paid').forEach(b => b.onclick = () => markPaid(b.dataset.id, b.dataset.due, () => recurringPage(kind)));
     hbarChart($('#r-chart'), { items: items.map(i => ({ label: i.name, value: monthly(i),
