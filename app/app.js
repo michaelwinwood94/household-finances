@@ -1,11 +1,12 @@
 import { createClient } from 'https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2/+esm';
-import { SUPABASE_URL, SUPABASE_PUBLISHABLE_KEY } from './config.js?v=202611241500';
-import { parseBankCsv, parseWestpacActivity, parseScannedPdf, parseLatitudeStatement, isLatitudeStatement, splitAccounts, linesFromItems, parseBankPaste } from './csv.js?v=202611241500';
-import { readPayslip, toLines } from './payslip.js?v=202611241500';
-import { readBill } from './bill.js?v=202611241500';
-import { cleanMerchant, parseAfterpay, parseDeferit, mergeRows, isKnown, shopKey, bestShopKey, detectBnplPdf, parseBnplPdf, resolveTruncated, detectBnplPaste, parseBnplPaste } from './bnpl.js?v=202611241500';
-import { toast, softDelete, busy, friendlyError, watchOnline, info, wireInfoTips, skeleton, wireInstall, applyPrefs, settingsMenu, prefs, setPref, store } from './ui.js?v=202611241500';
-import { columnChart, hbarChart, lineChart, SERIES, moneyRound, moneyCompact } from './charts.js?v=202611241500';
+import { SUPABASE_URL, SUPABASE_PUBLISHABLE_KEY } from './config.js?v=202611241700';
+import { parseBankCsv, parseWestpacActivity, parseScannedPdf, parseLatitudeStatement, isLatitudeStatement, splitAccounts, linesFromItems, parseBankPaste } from './csv.js?v=202611241700';
+import { readPayslip, toLines } from './payslip.js?v=202611241700';
+import { readBill } from './bill.js?v=202611241700';
+import { cleanMerchant, parseAfterpay, parseDeferit, mergeRows, isKnown, shopKey, bestShopKey, detectBnplPdf, parseBnplPdf, resolveTruncated, detectBnplPaste, parseBnplPaste } from './bnpl.js?v=202611241700';
+import { toast, softDelete, busy, friendlyError, watchOnline, info, wireInfoTips, skeleton, wireInstall, applyPrefs, settingsMenu, prefs, setPref, store } from './ui.js?v=202611241700';
+import { dataThrough, classifyOverdue } from './arrears.js?v=202611241700';
+import { columnChart, hbarChart, lineChart, SERIES, moneyRound, moneyCompact } from './charts.js?v=202611241700';
 
 const sb = createClient(SUPABASE_URL, SUPABASE_PUBLISHABLE_KEY);
 const $ = (s, el = document) => el.querySelector(s);
@@ -1326,19 +1327,25 @@ let upDays = (() => { try { const v = Number(localStorage.getItem('upDays')); re
 // Arrears card (Home and Insights): recorded arrears on debts, plus bills past their due date that aren't already part of those arrears
 async function arrearsFill(el) {
   if (!el) return;
-  const [ds, its] = await Promise.all([
+  const [ds, its, tx] = await Promise.all([
     q(sb.from('debts').select('id, creditor, arrears_amount, split, hardship_status').eq('status', 'active').gt('arrears_amount', 0)),
-    q(sb.from('recurring_items').select('id, name, amount, next_due, debt_id, split').eq('direction', 'out').eq('is_active', true).lt('next_due', today()).order('next_due')),
+    q(sb.from('recurring_items').select('id, name, amount, next_due, debt_id, split, account_id, direction, is_active').eq('direction', 'out').eq('is_active', true).lt('next_due', today()).order('next_due')),
+    q(sb.from('transactions').select('account_id, txn_date').order('txn_date', { ascending: false }).limit(1000)),
   ]);
   const arrIds = new Set(ds.map(d => d.id));
   const rec = ds.map(d => ({ name: d.creditor, v: Number(d.arrears_amount) * shareFor(d.split), note: d.hardship_status && !['none', ''].includes(d.hardship_status) ? `hardship: ${label(d.hardship_status).toLowerCase()}` : '' })).filter(x => x.v > 0.004).sort((a, b) => b.v - a.v);
-  const bills = its.filter(i => !i.debt_id || !arrIds.has(i.debt_id)).map(i => ({ name: i.name, v: Number(i.amount) * shareFor(i.split), late: -daysFromToday(i.next_due), loan: !!i.debt_id })).filter(x => x.v > 0.004);
-  if (!rec.length && !bills.length) { el.innerHTML = ''; return; }
-  const recT = sum(rec, x => x.v), billT = sum(bills, x => x.v);
-  el.innerHTML = `<section class="card arrears"><div class="sec-head"><div><h2>Arrears</h2><p class="hint">${personView === 'all' ? 'Household' : esc(personName()) + "'s share"} · behind by <b>${money(recT + billT)}</b> in total</p></div><button class="small" data-go="debts">Debts</button></div>
+  const { confirmed, unconfirmed } = classifyOverdue(its.filter(i => !i.debt_id || !arrIds.has(i.debt_id)), dataThrough(tx), today());
+  const row = i => ({ name: i.name, v: Number(i.amount) * shareFor(i.split), late: -daysFromToday(i.next_due), loan: !!i.debt_id });
+  const conf = confirmed.map(row).filter(x => x.v > 0.004), bills = unconfirmed.map(row).filter(x => x.v > 0.004);
+  if (!rec.length && !conf.length && !bills.length) { el.innerHTML = ''; return; }
+  const recT = sum(rec, x => x.v), confT = sum(conf, x => x.v), billT = sum(bills, x => x.v);
+  const li = (x, why) => `<li><div class="due-main"><b>${esc(x.name)}</b><div class="hint">${x.late} day${x.late === 1 ? '' : 's'} late${x.loan ? ' · loan repayment' : ''}${why ? ' · ' + why : ''}</div></div><div class="due-amt">${money(x.v)}</div></li>`;
+  el.innerHTML = `<section class="card arrears"><div class="sec-head"><div><h2>Arrears</h2><p class="hint">${personView === 'all' ? 'Household' : esc(personName()) + "'s share"} · behind by <b>${money(recT + confT)}</b> in total${billT ? ` · plus ${money(billT)} overdue, not yet confirmed` : ''}</p></div><button class="small" data-go="debts">Debts</button></div>
     ${rec.length ? `<h3>Recorded arrears <span class="rpt-total">${money(recT)}</span></h3><ul class="due-list arr-list">${rec.map(x => `<li><div class="due-main"><b>${esc(x.name)}</b>${x.note ? `<div class="hint">${esc(x.note)}</div>` : ''}</div><div class="due-amt">${money(x.v)}</div></li>`).join('')}</ul>` : ''}
-    ${bills.length ? `<h3>Overdue bills not in arrears <span class="rpt-total">${money(billT)}</span></h3><ul class="due-list arr-list">${bills.map(x => `<li><div class="due-main"><b>${esc(x.name)}</b><div class="hint">${x.late} day${x.late === 1 ? '' : 's'} late${x.loan ? ' · loan repayment, arrears not recorded' : ''}</div></div><div class="due-amt">${money(x.v)}</div></li>`).join('')}</ul>
-      <p class="hint">Overdue by due date. Mark a bill Paid if it has been paid; for a loan, enter the overdue amount on Debts so it counts as arrears (and shows in the Report).</p><button class="small" data-go="bills">Open bills</button>` : ''}</section>`;
+    ${conf.length ? `<h3>In arrears: unpaid after latest import <span class="rpt-total">${money(confT)}</span></h3><ul class="due-list arr-list">${conf.map(x => li(x, 'import runs past due date')).join('')}</ul>` : ''}
+    ${bills.length ? `<h3>Overdue, not yet confirmed <span class="rpt-total">${money(billT)}</span></h3><ul class="due-list arr-list">${bills.map(x => li(x, '')).join('')}</ul>
+      <p class="hint">No bank import covers the day after the due date yet. Import the latest statement to confirm, or mark Paid.</p>` : ''}
+    ${conf.length || bills.length ? '<button class="small" data-go="bills">Open bills</button>' : ''}</section>`;
   el.querySelectorAll('[data-go]').forEach(b => b.onclick = () => show(b.dataset.go));
 }
 // A debt with an overdue amount (arrears) but no overdue bill against it still has to show as overdue in the due lists
@@ -2540,9 +2547,11 @@ async function reportView() {
   const monthName = d => d.toLocaleDateString('en-AU', { month: 'short', year: 'numeric' });
 
   // debts
+  const through = dataThrough(allTxns), overdueConf = classifyOverdue(items, through, today()).confirmed;   // bills unpaid with an import past their due date count as arrears
   const debts = debtsRaw.map(d => { const sh = shareFor(d.split, who);
+    const confArr = sum(overdueConf.filter(i => i.debt_id === d.id), i => Number(i.amount));
     const last = contacts.find(c => c.debt_id === d.id);
-    return { ...d, sh, bal: Number(d.current_balance || 0) * sh, arr: Number(d.arrears_amount || 0) * sh, repM: Math.max(0, Number(d.min_payment || 0) * PER_MONTH[d.payment_frequency || 'monthly'] * sh - (d.debt_type === 'bnpl' ? bnplPaidM[(d.creditor || '').split(' ')[0].toLowerCase()] || 0 : 0)), last,
+    return { ...d, sh, bal: Number(d.current_balance || 0) * sh, arr: Math.max(Number(d.arrears_amount || 0), confArr) * sh, repM: Math.max(0, Number(d.min_payment || 0) * PER_MONTH[d.payment_frequency || 'monthly'] * sh - (d.debt_type === 'bnpl' ? bnplPaidM[(d.creditor || '').split(' ')[0].toLowerCase()] || 0 : 0)), last,
       secured: ['mortgage', 'car_loan'].includes(d.debt_type) }; }).filter(d => d.sh > 0);
   const debtTotal = sum(debts, d => d.bal), arrTotal = sum(debts, d => d.arr), repM = sum(debts, d => d.repM);
   const available = incomeM - livingM, after = available - repM;

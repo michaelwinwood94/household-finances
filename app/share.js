@@ -1,6 +1,6 @@
 // View-only Report: reads a frozen snapshot through the public get_shared_report() function using the secret after the # in the address.
 // No sign-in, no editing, nothing but the snapshot is reachable from here.
-import { SUPABASE_URL, SUPABASE_PUBLISHABLE_KEY } from './config.js?v=202611241500';
+import { SUPABASE_URL, SUPABASE_PUBLISHABLE_KEY } from './config.js?v=202611241700';
 
 const AUD = new Intl.NumberFormat('en-AU', { style: 'currency', currency: 'AUD' });
 const money = n => n == null ? '—' : AUD.format(Number(n));
