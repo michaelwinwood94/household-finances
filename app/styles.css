@@ -10,6 +10,7 @@
 }
 * { box-sizing: border-box; }
 html { -webkit-text-size-adjust: 100%; }
+html { background: var(--bg); }
 body { margin: 0; background: var(--bg); color: var(--ink); font-family: 'Atkinson Hyperlegible', Verdana, sans-serif;
   font-size: 17px; line-height: 1.5; letter-spacing: .005em; }
 .hidden { display: none !important; }
@@ -488,3 +489,63 @@ tr.sub.off td { opacity: .45; text-decoration: line-through; }
 tr.det td { padding-top: .1rem; padding-bottom: .1rem; font-size: .88rem; color: var(--ink-2); } tr.det td:first-child { padding-left: 3.2rem; }
 tr.det.off td { opacity: .45; text-decoration: line-through; }
 @media print { .rpt-x, .rpt-x-sp { display: none; } tr.det.off { display: none; } .rpt-chk input, .no-print-hide { display: none; } tr.sub.off { display: none; } }
+
+
+/* =================== frosted glass (progressive: only where backdrop-filter works; solid fallbacks otherwise) =================== */
+/* money columns line up, labels read as small caps */
+.num, td.num, .qa dd, .tile-value, .stat .value, .due-amt, td { font-variant-numeric: tabular-nums; }
+.tile-label, .stat .label { text-transform: uppercase; letter-spacing: .04em; font-size: .7rem; font-weight: 700; }
+.sheet-label { grid-column: 1 / -1; font-size: .72rem; font-weight: 700; letter-spacing: .08em; text-transform: uppercase; color: var(--muted); padding: .35rem .3rem 0; }
+.cta { display: block; width: 100%; text-align: left; font-size: 1.05rem; font-weight: 700; padding: .85rem 1.1rem; margin: 0 0 .9rem; border-radius: var(--radius); }
+@media (min-width: 761px) { .cta { width: auto; display: inline-block; } }
+
+:root { --glass: rgba(255, 255, 255, .58); --glass-strong: rgba(255, 255, 255, .86); --glass-line: rgba(255, 255, 255, .75); --glass-shadow: 0 8px 28px rgba(31, 78, 70, .10), 0 1px 2px rgba(31, 78, 70, .06); --blur: 16px;
+  --wash: radial-gradient(60rem 40rem at 8% -5%, rgba(43, 106, 95, .42), transparent 60%), radial-gradient(50rem 38rem at 100% 8%, rgba(237, 161, 0, .32), transparent 60%), radial-gradient(55rem 45rem at 50% 108%, rgba(42, 120, 214, .30), transparent 62%), var(--bg); }
+html[data-theme="dark"] { --glass: rgba(30, 33, 32, .62); --glass-strong: rgba(28, 30, 29, .84); --glass-line: rgba(255, 255, 255, .09); --glass-shadow: 0 8px 28px rgba(0, 0, 0, .45);
+  --wash: radial-gradient(60rem 40rem at 8% -5%, rgba(47, 122, 108, .40), transparent 60%), radial-gradient(50rem 38rem at 100% 8%, rgba(190, 120, 30, .26), transparent 60%), radial-gradient(55rem 45rem at 50% 108%, rgba(60, 110, 200, .26), transparent 62%), var(--bg); }
+
+@supports ((-webkit-backdrop-filter: blur(1px)) or (backdrop-filter: blur(1px))) {
+  /* fixed wash behind everything (a pseudo-element, because fixed backgrounds are unreliable on iPhone) */
+  body { background: transparent; }
+  body::before { content: ''; position: fixed; inset: 0; z-index: -1; background: var(--wash); }
+  .card, .tile, .stat, .alert, .tabs, .bottomnav, .more-sheet, .settings-pop, .search-box, dialog {
+    -webkit-backdrop-filter: blur(var(--blur)) saturate(1.4); backdrop-filter: blur(var(--blur)) saturate(1.4); }
+  .card, .tile, .stat { background: var(--glass); border-color: var(--glass-line); box-shadow: var(--glass-shadow); }
+  .alert { background: var(--glass); border-color: var(--glass-line); }
+  .alert.urgent { background: color-mix(in srgb, var(--bad-bg) 78%, transparent); }
+  .alert.warning { background: color-mix(in srgb, var(--warn-bg) 78%, transparent); }
+  .tabs { background: var(--glass-strong); border-bottom-color: var(--glass-line); }
+  .more-sheet, .settings-pop, .search-box, dialog { background: var(--glass-strong); border: 1px solid var(--glass-line); }
+  dialog::backdrop { background: rgba(20, 28, 26, .35); -webkit-backdrop-filter: blur(6px); backdrop-filter: blur(6px); }
+  .search { background: rgba(20, 28, 26, .30); -webkit-backdrop-filter: blur(6px); backdrop-filter: blur(6px); }
+  /* one blur per surface: glass inside glass stays flat (iPhone does not stack blurs, and it saves battery) */
+  .card .card, .card .tile, .card .stat, .card .alert, dialog .card, dialog .tile { -webkit-backdrop-filter: none; backdrop-filter: none; background: color-mix(in srgb, var(--card) 60%, transparent); box-shadow: none; }
+  /* long lists stay solid so they scroll smoothly */
+  table.list tbody tr { background: color-mix(in srgb, var(--card) 72%, transparent); }
+  html[data-theme="dark"] .more-sheet, html[data-theme="dark"] .settings-pop, html[data-theme="dark"] .search-box, html[data-theme="dark"] dialog { background: var(--glass-strong); }
+  html[data-theme="dark"] .tabs button.active, .tabs button.active { box-shadow: 0 1px 6px rgba(31, 78, 70, .3); }
+  /* phone: floating glass bar */
+  @media (max-width: 760px) {
+    .bottomnav:not(.hidden) { left: .6rem; right: .6rem; bottom: calc(.5rem + env(safe-area-inset-bottom)); padding: .2rem; border: 1px solid var(--glass-line); border-radius: 22px;
+      background: var(--glass-strong); box-shadow: var(--glass-shadow); }
+    .bottomnav button { border-radius: 16px; }
+    .bottomnav button.active { background: color-mix(in srgb, var(--brand) 14%, transparent) !important; }
+    .more-sheet:not(.hidden) { left: .6rem; right: .6rem; bottom: calc(5.2rem + env(safe-area-inset-bottom)); border-radius: 20px; box-shadow: var(--glass-shadow); }
+    .more-sheet button { background: color-mix(in srgb, var(--card) 55%, transparent); border-color: var(--line); }
+    .more-sheet button.active { background: var(--brand); }
+    main { padding-bottom: 7.5rem; }
+    .toast { bottom: calc(5.4rem + env(safe-area-inset-bottom)); }
+  }
+}
+/* people who ask their device for less transparency get solid surfaces */
+@media (prefers-reduced-transparency: reduce) {
+  body::before { background: var(--bg); }
+  .card, .tile, .stat, .alert, .tabs, .bottomnav, .more-sheet, .settings-pop, .search-box, dialog, dialog::backdrop, .search { -webkit-backdrop-filter: none !important; backdrop-filter: none !important; }
+  .card, .tile, .stat, .alert, .tabs, .bottomnav, .more-sheet, .settings-pop, .search-box, dialog { background: var(--card) !important; }
+}
+/* print and PDF (the Report goes to lenders): plain white, no glass */
+@media print {
+  body::before { display: none; } body { background: #fff !important; }
+  .card, .tile, .stat, .alert, table.list tbody tr { -webkit-backdrop-filter: none !important; backdrop-filter: none !important; background: #fff !important; border-color: #ccc !important; box-shadow: none !important; }
+  .cta { display: none !important; }
+}
