@@ -1,11 +1,11 @@
 import { createClient } from 'https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2/+esm';
-import { SUPABASE_URL, SUPABASE_PUBLISHABLE_KEY } from './config.js?v=202611241430';
-import { parseBankCsv, parseWestpacActivity, parseScannedPdf, parseLatitudeStatement, isLatitudeStatement, splitAccounts, linesFromItems, parseBankPaste } from './csv.js?v=202611241430';
-import { readPayslip, toLines } from './payslip.js?v=202611241430';
-import { readBill } from './bill.js?v=202611241430';
-import { cleanMerchant, parseAfterpay, parseDeferit, mergeRows, isKnown, shopKey, bestShopKey, detectBnplPdf, parseBnplPdf, resolveTruncated, detectBnplPaste, parseBnplPaste } from './bnpl.js?v=202611241430';
-import { toast, softDelete, busy, friendlyError, watchOnline, info, wireInfoTips, skeleton, wireInstall, applyPrefs, settingsMenu, prefs, setPref, store } from './ui.js?v=202611241430';
-import { columnChart, hbarChart, lineChart, SERIES, moneyRound, moneyCompact } from './charts.js?v=202611241430';
+import { SUPABASE_URL, SUPABASE_PUBLISHABLE_KEY } from './config.js?v=202611241500';
+import { parseBankCsv, parseWestpacActivity, parseScannedPdf, parseLatitudeStatement, isLatitudeStatement, splitAccounts, linesFromItems, parseBankPaste } from './csv.js?v=202611241500';
+import { readPayslip, toLines } from './payslip.js?v=202611241500';
+import { readBill } from './bill.js?v=202611241500';
+import { cleanMerchant, parseAfterpay, parseDeferit, mergeRows, isKnown, shopKey, bestShopKey, detectBnplPdf, parseBnplPdf, resolveTruncated, detectBnplPaste, parseBnplPaste } from './bnpl.js?v=202611241500';
+import { toast, softDelete, busy, friendlyError, watchOnline, info, wireInfoTips, skeleton, wireInstall, applyPrefs, settingsMenu, prefs, setPref, store } from './ui.js?v=202611241500';
+import { columnChart, hbarChart, lineChart, SERIES, moneyRound, moneyCompact } from './charts.js?v=202611241500';
 
 const sb = createClient(SUPABASE_URL, SUPABASE_PUBLISHABLE_KEY);
 const $ = (s, el = document) => el.querySelector(s);
@@ -646,6 +646,8 @@ async function dashboard() {
       ${s ? `<button class="chip" data-go="shared">${s > 0 ? `${esc(partner)} owes you <b>${moneyRound(s)}</b>` : `You owe ${esc(partner)} <b>${moneyRound(-s)}</b>`} →</button>` : ''}
     </div>` : ''}
 
+    <div id="arrears-box"></div>
+
     <div class="grid2">
       <section class="card"><div class="sec-head"><div><h2>Coming up</h2><p class="hint">Next 14 days · ${esc(pName)} amounts</p></div><button class="small" data-go="bills">All bills</button></div>
         ${upcoming.length ? `<ul class="due-list">${upcoming.map(u => {
@@ -666,6 +668,7 @@ async function dashboard() {
     <details class="card fold" data-fold="flow"><summary><h2>Money in vs money out</h2><span class="fold-sum">This month in ${moneyRound(thisMonth.money_in || 0)} · out ${moneyRound(thisMonth.money_out || 0)}</span></summary>
       <p class="hint">Household, by month · transfers and loan interest not counted</p>
       <div id="flow-chart"></div></details>`;
+  arrearsFill($('#arrears-box'));
   view.querySelectorAll('details.fold').forEach(d => { try { d.open = localStorage.getItem('fold-' + d.dataset.fold) === '1'; } catch {} d.addEventListener('toggle', () => { try { localStorage.setItem('fold-' + d.dataset.fold, d.open ? '1' : '0'); } catch {} }); });
 
   // charts
@@ -1320,6 +1323,24 @@ async function importView() {
 // ---------- BILLS & INCOME ----------
 const UP_RANGES = [[7, '1 week'], [14, '2 weeks'], [35, '5 weeks'], [61, '2 months'], [92, '3 months'], [183, '6 months']];
 let upDays = (() => { try { const v = Number(localStorage.getItem('upDays')); return UP_RANGES.some(r => r[0] === v) ? v : 35; } catch { return 35; } })();
+// Arrears card (Home and Insights): recorded arrears on debts, plus bills past their due date that aren't already part of those arrears
+async function arrearsFill(el) {
+  if (!el) return;
+  const [ds, its] = await Promise.all([
+    q(sb.from('debts').select('id, creditor, arrears_amount, split, hardship_status').eq('status', 'active').gt('arrears_amount', 0)),
+    q(sb.from('recurring_items').select('id, name, amount, next_due, debt_id, split').eq('direction', 'out').eq('is_active', true).lt('next_due', today()).order('next_due')),
+  ]);
+  const arrIds = new Set(ds.map(d => d.id));
+  const rec = ds.map(d => ({ name: d.creditor, v: Number(d.arrears_amount) * shareFor(d.split), note: d.hardship_status && !['none', ''].includes(d.hardship_status) ? `hardship: ${label(d.hardship_status).toLowerCase()}` : '' })).filter(x => x.v > 0.004).sort((a, b) => b.v - a.v);
+  const bills = its.filter(i => !i.debt_id || !arrIds.has(i.debt_id)).map(i => ({ name: i.name, v: Number(i.amount) * shareFor(i.split), late: -daysFromToday(i.next_due), loan: !!i.debt_id })).filter(x => x.v > 0.004);
+  if (!rec.length && !bills.length) { el.innerHTML = ''; return; }
+  const recT = sum(rec, x => x.v), billT = sum(bills, x => x.v);
+  el.innerHTML = `<section class="card arrears"><div class="sec-head"><div><h2>Arrears</h2><p class="hint">${personView === 'all' ? 'Household' : esc(personName()) + "'s share"} · behind by <b>${money(recT + billT)}</b> in total</p></div><button class="small" data-go="debts">Debts</button></div>
+    ${rec.length ? `<h3>Recorded arrears <span class="rpt-total">${money(recT)}</span></h3><ul class="due-list arr-list">${rec.map(x => `<li><div class="due-main"><b>${esc(x.name)}</b>${x.note ? `<div class="hint">${esc(x.note)}</div>` : ''}</div><div class="due-amt">${money(x.v)}</div></li>`).join('')}</ul>` : ''}
+    ${bills.length ? `<h3>Overdue bills not in arrears <span class="rpt-total">${money(billT)}</span></h3><ul class="due-list arr-list">${bills.map(x => `<li><div class="due-main"><b>${esc(x.name)}</b><div class="hint">${x.late} day${x.late === 1 ? '' : 's'} late${x.loan ? ' · loan repayment, arrears not recorded' : ''}</div></div><div class="due-amt">${money(x.v)}</div></li>`).join('')}</ul>
+      <p class="hint">Overdue by due date. Mark a bill Paid if it has been paid; for a loan, enter the overdue amount on Debts so it counts as arrears (and shows in the Report).</p><button class="small" data-go="bills">Open bills</button>` : ''}</section>`;
+  el.querySelectorAll('[data-go]').forEach(b => b.onclick = () => show(b.dataset.go));
+}
 // A debt with an overdue amount (arrears) but no overdue bill against it still has to show as overdue in the due lists
 async function arrearsRows(up) {
   const ds = await q(sb.from('debts').select('id, creditor, arrears_amount, split').eq('status', 'active').gt('arrears_amount', 0));
@@ -1700,6 +1721,7 @@ async function insightsView() {
   view.innerHTML = `<div class="page-head"><div><h1 class="page-title">Insights</h1>
       <p class="hint">Worked out automatically from your transactions — refreshed every morning and after each import. Household figures.</p></div></div>
     <div class="tiles" id="n-tiles"></div>
+    <div id="n-arrears"></div>
     <section class="card"><div class="sec-head"><div><h2>Next 4 weeks</h2><p class="hint" id="n-fc-hint"></p></div></div><div id="n-fc"></div><p class="hint" id="n-fc-note"></p></section>
     <div class="grid2">
       <section class="card" id="n-bounce"></section>
@@ -1720,6 +1742,7 @@ async function insightsView() {
   const untilPay = days.filter(d => !nextIn || d.d < nextIn);
   const safe = untilPay.length ? Math.max(0, Math.min(Number(fc.start), ...untilPay.map(d => Number(d.bal)))) : Number(fc.start);
   const overdueTotal = sum(fc.overdue, o => o.amount);
+  arrearsFill($('#n-arrears'));
   $('#n-tiles').innerHTML = `
     <div class="tile"><div class="tile-label">Money in everyday accounts ${info('CommBank and Westpac Choice added together, as at your last import. Loan accounts are not included.')}</div><div class="tile-value">${moneyRound(fc.start)}</div><div class="tile-sub">household, now</div></div>
     <div class="tile ${low && low.bal < 0 ? 'bad' : 'good'}"><div class="tile-label">Lowest point, next 4 weeks ${info('Your balance today, plus income and bills when they are due, minus your usual everyday spending each day. Below $0 means overdrawn fees ($15 each) unless you move money or spend less.')}</div><div class="tile-value">${low ? moneyRound(low.bal) : '—'}</div><div class="tile-sub">${low ? 'around ' + esc(shortDate(low.d)) : ''}</div></div>
