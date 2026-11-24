@@ -1,11 +1,11 @@
 import { createClient } from 'https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2/+esm';
-import { SUPABASE_URL, SUPABASE_PUBLISHABLE_KEY } from './config.js?v=202611241400';
-import { parseBankCsv, parseWestpacActivity, parseScannedPdf, parseLatitudeStatement, isLatitudeStatement, splitAccounts, linesFromItems, parseBankPaste } from './csv.js?v=202611241400';
-import { readPayslip, toLines } from './payslip.js?v=202611241400';
-import { readBill } from './bill.js?v=202611241400';
-import { cleanMerchant, parseAfterpay, parseDeferit, mergeRows, isKnown, shopKey, bestShopKey, detectBnplPdf, parseBnplPdf, resolveTruncated, detectBnplPaste, parseBnplPaste } from './bnpl.js?v=202611241400';
-import { toast, softDelete, busy, friendlyError, watchOnline, info, wireInfoTips, skeleton, wireInstall, applyPrefs, settingsMenu, prefs, setPref, store } from './ui.js?v=202611241400';
-import { columnChart, hbarChart, lineChart, SERIES, moneyRound, moneyCompact } from './charts.js?v=202611241400';
+import { SUPABASE_URL, SUPABASE_PUBLISHABLE_KEY } from './config.js?v=202611241430';
+import { parseBankCsv, parseWestpacActivity, parseScannedPdf, parseLatitudeStatement, isLatitudeStatement, splitAccounts, linesFromItems, parseBankPaste } from './csv.js?v=202611241430';
+import { readPayslip, toLines } from './payslip.js?v=202611241430';
+import { readBill } from './bill.js?v=202611241430';
+import { cleanMerchant, parseAfterpay, parseDeferit, mergeRows, isKnown, shopKey, bestShopKey, detectBnplPdf, parseBnplPdf, resolveTruncated, detectBnplPaste, parseBnplPaste } from './bnpl.js?v=202611241430';
+import { toast, softDelete, busy, friendlyError, watchOnline, info, wireInfoTips, skeleton, wireInstall, applyPrefs, settingsMenu, prefs, setPref, store } from './ui.js?v=202611241430';
+import { columnChart, hbarChart, lineChart, SERIES, moneyRound, moneyCompact } from './charts.js?v=202611241430';
 
 const sb = createClient(SUPABASE_URL, SUPABASE_PUBLISHABLE_KEY);
 const $ = (s, el = document) => el.querySelector(s);
@@ -2541,7 +2541,7 @@ async function reportView() {
       <div class="row no-print">
         <div class="seg" role="tablist" aria-label="Period to average over">${RPT_RANGES.map(n => `<button class="${n === rptRange ? 'on' : ''}" data-rr="${n}">${n === 1 ? 'Last month' : `Last ${n} months`}</button>`).join('')}</div>
         <div class="seg" role="tablist" aria-label="Show amounts per">${Object.entries(RPT_FREQ).map(([k, v]) => `<button class="${k === rptFreq ? 'on' : ''}" data-rf="${k}">Per ${v.label}</button>`).join('')}</div>
-        <button id="rp-copy">Copy as text</button><button id="rp-print">Print / PDF</button><button id="rp-csv">CSV</button></div></div>
+        <button id="rp-copy">Copy as text</button><button id="rp-print">Print / PDF</button><button id="rp-csv">CSV</button><button id="rp-share">Share link</button></div></div>
 
     <section class="card rpt-quick"><h2>On the phone: quick answers</h2>
       <dl class="qa">
@@ -2653,6 +2653,52 @@ async function reportView() {
     Object.assign(out, { links: cache.settings?.report?.links || [] });
     await busy(e.submitter, () => q(sb.from('settings').update({ report: out }).eq('owner_id', session.user.id)));
     cache.settings.report = out; toast('Answers saved'); reportView();
+  };
+  // ---- Share link: a frozen, view-only copy behind a long random secret (only its SHA-256 fingerprint is stored; the secret is shown once) ----
+  const buildSnapshot = () => ({
+    v: 1, as_at: today(), who: who === 'all' ? 'Household' : whoName, per: F.label, range: rangeTxt, months_n: N,
+    income: income.map(x => ({ name: x.name, whose: x.whose, per: fx(x.m) })), income_total: fx(incomeM), income_actual: fx(actualInM),
+    living: groups.map(g => ({ g: g.g, total: fx(g.lines.filter(([n]) => !rptOff.has(n)).reduce((t, [, v]) => t + v, 0)), lines: g.lines.filter(([n]) => !rptOff.has(n)).map(([n, v]) => [n, fx(v)]) })).filter(g => g.lines.length),
+    living_total: fx(livingM), oneoff: oneOffs.length && !rptOne ? { n: oneOffs.length, per: fx(oneOffM) } : null, excluded: [...rptOff],
+    months: months.map(r => ({ m: monthName(r.d), inn: fx(r.inn), out: fx(r.out), left: fx(r.left) })), avg: { inn: fx(monthsTot.inn / N), out: fx(monthsTot.out / N), left: fx((monthsTot.inn - monthsTot.out) / N) },
+    debts: debts.map(d => ({ creditor: d.creditor, type: label(d.debt_type), balance: d.bal, overdue: d.arr, repay: fx(d.repM), hardship: d.hardship_status && d.hardship_status !== 'none' ? label(d.hardship_status) : '' })),
+    debt_total: debtTotal, overdue_total: arrTotal, repay_total: fx(repM),
+    summary: { income: fx(incomeM), living: fx(livingM), available: fx(available), repay: fx(repM), after: fx(after) },
+    cash: cash.map(a => ({ name: a.name, v: a.v })), cash_total: cashTotal,
+    assets: ['home_value', 'vehicles', 'super', 'other_assets'].map(k => ({ q: RPT_QUESTIONS.find(x => x[0] === k)[1], a: notes[k] || '' })).filter(x => x.a),
+  });
+  $('#rp-share').onclick = async () => {
+    const dlg = document.createElement('dialog'); dlg.className = 'share-dlg';
+    const status = r => r.revoked_at ? 'Revoked' : new Date(r.expires_at) < new Date() ? 'Expired' : 'Active';
+    const drawList = async () => {
+      const rows = await q(sb.from('report_shares').select('id, label, created_at, expires_at, revoked_at, views, last_viewed_at').order('created_at', { ascending: false }).limit(20));
+      dlg.querySelector('#sh-list').innerHTML = rows.length ? `<table class="list"><thead><tr><th>Link</th><th>Status</th><th class="num">Views</th><th></th></tr></thead><tbody>${rows.map(r => `<tr><td data-label="Link"><b>${esc(r.label || 'Report link')}</b><div class="hint">Made ${esc(fmtDate(r.created_at.slice(0, 10)))} · expires ${esc(fmtDate(r.expires_at.slice(0, 10)))}</div></td>
+        <td data-label="Status">${status(r)}</td><td class="num" data-label="Views">${r.views}${r.last_viewed_at ? `<div class="hint">last ${esc(fmtDate(r.last_viewed_at.slice(0, 10)))}</div>` : ''}</td>
+        <td class="actions">${status(r) === 'Active' ? `<button class="small" data-revoke="${r.id}">Revoke</button>` : ''}</td></tr>`).join('')}</tbody></table>` : '<p class="hint">No links yet.</p>';
+      dlg.querySelectorAll('[data-revoke]').forEach(b => b.onclick = async () => { b.disabled = true; await q(sb.from('report_shares').update({ revoked_at: new Date().toISOString() }).eq('id', b.dataset.revoke)); toast('Link revoked'); drawList(); });
+    };
+    dlg.innerHTML = `<h2>Share a view-only link</h2>
+      <p class="hint">A frozen copy of this Report as it is now (${esc(who === 'all' ? 'household' : whoName)}, per ${esc(F.label)}, ${esc(rangeTxt)}). Anyone with the link can read it until it expires in <b>7 days</b> or you revoke it. It includes income, living costs, debts, bank balances and assets. It leaves out people's names and contacts, your reasons and the call log. Send it only to the hardship team.</p>
+      <label>Who is it for? <input id="sh-label" maxlength="60" placeholder="e.g. Latitude hardship team"></label>
+      <div class="row"><button class="primary" id="sh-make">Create link</button><button id="sh-close" type="button">Close</button></div>
+      <div id="sh-out"></div><h3>Your links</h3><div id="sh-list"><p class="loading">Loading…</p></div>`;
+    document.body.appendChild(dlg); dlg.showModal(); dlg.addEventListener('close', () => dlg.remove());
+    dlg.querySelector('#sh-close').onclick = () => dlg.close();
+    dlg.querySelector('#sh-make').onclick = async e => {
+      const btn = e.target; btn.disabled = true;
+      try {
+        const bytes = crypto.getRandomValues(new Uint8Array(32)), token = btoa(String.fromCharCode(...bytes)).replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, '');
+        const hash = [...new Uint8Array(await crypto.subtle.digest('SHA-256', new TextEncoder().encode(token)))].map(b => b.toString(16).padStart(2, '0')).join('');
+        await q(sb.from('report_shares').insert({ token_hash: hash, label: dlg.querySelector('#sh-label').value.trim() || null, snapshot: buildSnapshot(), expires_at: new Date(Date.now() + 7 * 864e5).toISOString() }));
+        const link = new URL('share.html', location.href).href.split('#')[0] + '#' + token;
+        dlg.querySelector('#sh-out').innerHTML = `<div class="callout good"><b>Link ready.</b> Copy it now: it can't be shown again (if you lose it, make a new one).<input id="sh-link" readonly value="${esc(link)}" style="margin-top:.5rem"><div class="row"><button class="primary" id="sh-copy">Copy link</button></div></div>`;
+        const inp = dlg.querySelector('#sh-link'); inp.focus(); inp.select();
+        dlg.querySelector('#sh-copy').onclick = async () => { try { await navigator.clipboard.writeText(link); toast('Link copied'); } catch { inp.select(); toast('Press and hold to copy'); } };
+        drawList();
+      } catch (err) { toast(friendlyError(err)); }
+      btn.disabled = false;
+    };
+    drawList();
   };
   $('#rp-print').onclick = () => { view.querySelectorAll('details.rpt').forEach(d => d.open = true); window.print(); };
   const textReport = () => {

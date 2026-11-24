@@ -1,0 +1,4 @@
+-- Applied live: view-only Report links. Table public.report_shares (owner-only RLS) holds a frozen snapshot behind a long random secret;
+-- only the SHA-256 fingerprint of the secret is stored. public.get_shared_report(p_token) is the one public door (SECURITY DEFINER,
+-- anon + authenticated): returns the snapshot if the secret matches and the link is not revoked or expired, and counts the view.
+-- Expected advisor note: "anon can execute a SECURITY DEFINER function" is intentional for this function.
