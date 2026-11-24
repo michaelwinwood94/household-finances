@@ -1,11 +1,11 @@
 import { createClient } from 'https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2/+esm';
-import { SUPABASE_URL, SUPABASE_PUBLISHABLE_KEY } from './config.js?v=202611241030';
-import { parseBankCsv, parseWestpacActivity, parseScannedPdf, parseLatitudeStatement, isLatitudeStatement, splitAccounts, linesFromItems, parseBankPaste } from './csv.js?v=202611241030';
-import { readPayslip, toLines } from './payslip.js?v=202611241030';
-import { readBill } from './bill.js?v=202611241030';
-import { cleanMerchant, parseAfterpay, parseDeferit, mergeRows, isKnown, shopKey, bestShopKey, detectBnplPdf, parseBnplPdf, resolveTruncated, detectBnplPaste, parseBnplPaste } from './bnpl.js?v=202611241030';
-import { toast, softDelete, busy, friendlyError, watchOnline, info, wireInfoTips, skeleton, wireInstall, applyPrefs, settingsMenu, prefs, setPref, store } from './ui.js?v=202611241030';
-import { columnChart, hbarChart, lineChart, SERIES, moneyRound, moneyCompact } from './charts.js?v=202611241030';
+import { SUPABASE_URL, SUPABASE_PUBLISHABLE_KEY } from './config.js?v=202611241100';
+import { parseBankCsv, parseWestpacActivity, parseScannedPdf, parseLatitudeStatement, isLatitudeStatement, splitAccounts, linesFromItems, parseBankPaste } from './csv.js?v=202611241100';
+import { readPayslip, toLines } from './payslip.js?v=202611241100';
+import { readBill } from './bill.js?v=202611241100';
+import { cleanMerchant, parseAfterpay, parseDeferit, mergeRows, isKnown, shopKey, bestShopKey, detectBnplPdf, parseBnplPdf, resolveTruncated, detectBnplPaste, parseBnplPaste } from './bnpl.js?v=202611241100';
+import { toast, softDelete, busy, friendlyError, watchOnline, info, wireInfoTips, skeleton, wireInstall, applyPrefs, settingsMenu, prefs, setPref, store } from './ui.js?v=202611241100';
+import { columnChart, hbarChart, lineChart, SERIES, moneyRound, moneyCompact } from './charts.js?v=202611241100';
 
 const sb = createClient(SUPABASE_URL, SUPABASE_PUBLISHABLE_KEY);
 const $ = (s, el = document) => el.querySelector(s);
@@ -2343,6 +2343,7 @@ const RPT_QUESTIONS = [
   ['other', 'Anything else they should know', 'e.g. health, dependants, safety, other help already received'],
 ];
 let rptOpen = new Set();  // categories expanded in the Report to show what is in them
+let rptOne = false;       // include one-off purchases in the Report figures (off by default)
 let rptOff = new Set();   // categories switched off in the Report to see the impact (what-if only, not saved)
 let rptFreq = (() => { try { return localStorage.getItem('rptFreq') || 'fortnightly'; } catch { return 'fortnightly'; } })();
 const RPT_RANGES = [1, 2, 3, 6];
@@ -2353,7 +2354,7 @@ async function reportView() {
   const rangeTxt = `${fmtDate(m0)} – ${fmtDate(ymd(new Date(new Date(m1) - 864e5)))}`;
   const [items, allTxns, debtsRaw, contacts, bal, ins, inst] = await Promise.all([
     q(sb.from('recurring_items').select('*').eq('is_active', true)),
-    q(sb.from('transactions').select('amount, category_id, account_id, txn_date, recurring_item_id, description').gte('txn_date', m0).lt('txn_date', mEnd).range(0, 9999)),
+    q(sb.from('transactions').select('id, amount, category_id, account_id, txn_date, recurring_item_id, description').gte('txn_date', m0).lt('txn_date', mEnd).range(0, 9999)),
     q(sb.from('debts').select('*').eq('status', 'active').order('priority').order('current_balance', { ascending: false })),
     q(sb.from('debt_contacts').select('*').order('contact_date', { ascending: false }).limit(200)),
     q(sb.from('v_account_balances').select('*').eq('is_active', true)),
@@ -2368,12 +2369,27 @@ async function reportView() {
   const cats = new Map(cache.categories.map(c => [c.id, c]));
   const acctSplit = id => cache.accounts.find(a => a.id === id)?.split;
   const itemSplit = new Map(items.map(i => [i.id, i.split]));
+  const dayN = d => Math.round(new Date(d) / 864e5);
+  // own-account transfers: a debit and an equal credit in different accounts within 3 days, both unsorted or already marked as transfers, are one move of your own money
+  const xfer = new Set();
+  { const cand = allTxns.filter(t => !t.category_id || cats.get(t.category_id)?.kind === 'transfer');
+    for (const d of cand) { if (d.amount >= 0 || xfer.has(d)) continue;
+      const m = cand.find(c => c.amount > 0 && !xfer.has(c) && c.account_id !== d.account_id && Math.abs(c.amount + d.amount) < 0.005 && Math.abs(dayN(c.txn_date) - dayN(d.txn_date)) <= 3);
+      if (m) { xfer.add(d); xfer.add(m); } } }
+  // refunds: money back into a spending category reduces that category (it is not income)
+  const isRefund = t => { const c = cats.get(t.category_id); return t.amount > 0 && !xfer.has(t) && !!c && c.kind === 'expense' && !DEBT_CATS.test(c.name); };
+  // bills paid every 2+ months (rates, insurance, rego) are spread evenly instead of landing in whichever months they were paid
+  const lumpy = items.filter(i => i.direction === 'out' && !i.debt_id && ['bimonthly', 'quarterly', 'yearly'].includes(i.frequency) && cats.get(i.category_id)?.kind === 'expense' && !DEBT_CATS.test(cats.get(i.category_id).name));
+  const lumpyIds = new Set(lumpy.map(i => i.id));
+  // one-offs: a single purchase of this size that is not a regular bill or a routine cost is listed separately, so it does not inflate the ongoing rate
+  const ONEOFF = 300, ROUTINE = /grocer|food|fuel|petrol|rent|rates|power|electric|water|gas\b|phone|internet|insurance|medical|pharmacy|health|chemist|rego|registration/i;
+  const oneOffs = [];
 
   // income: regular income items
   const income = items.filter(i => i.direction === 'in').map(i => ({ name: i.name, m: i.amount * PER_MONTH[i.frequency] * shareFor(i.split, who), freq: i.frequency, amount: i.amount,
     whose: splitLabel(i.split) })).filter(x => x.m > 0.004).sort((a, b) => b.m - a.m);
   const incomeM = sum(income, x => x.m);
-  const actualInM = sum(txns.filter(t => t.amount > 0 && cats.get(t.category_id)?.kind !== 'transfer'), t => t.amount * shareFor(t.recurring_item_id ? itemSplit.get(t.recurring_item_id) : acctSplit(t.account_id), who)) / N;
+  const actualInM = sum(txns.filter(t => t.amount > 0 && cats.get(t.category_id)?.kind !== 'transfer' && !xfer.has(t) && !isRefund(t)), t => t.amount * shareFor(t.recurring_item_id ? itemSplit.get(t.recurring_item_id) : acctSplit(t.account_id), who)) / N;
 
   // living expenses: actual average of the last N full months (the range picker), grouped like a hardship form (debt repayments are listed separately)
   const exp = new Map();
@@ -2386,11 +2402,20 @@ async function reportView() {
   const bnplPaidM = {};   // Afterpay/Deferit payments now sitting in living-cost categories, per month by provider
   let unsorted = 0;
   for (const t of txns) {
-    if (t.amount >= 0) continue;
+    if (xfer.has(t) || (t.amount >= 0 && !isRefund(t))) continue;
     const c = cats.get(t.category_id);
     if (c && (c.kind === 'transfer' || c.kind === 'income' || DEBT_CATS.test(c.name))) continue;
+    if (lumpyIds.has(t.recurring_item_id)) continue;
     const share = shareFor(t.recurring_item_id ? itemSplit.get(t.recurring_item_id) : cache.settings?.default_split, who);
     const amt = -t.amount * share / N;
+    if (t.amount > 0) {   // refund
+      addDetail(c.name, 'Refunds', amt);
+      const g = EXP_GROUPS.find(([, re]) => re.test(c.name))[0];
+      if (!exp.has(g)) exp.set(g, new Map());
+      exp.get(g).set(c.name, (exp.get(g).get(c.name) || 0) + amt);
+      continue;
+    }
+    if (c && !t.recurring_item_id && -t.amount >= ONEOFF && !ROUTINE.test(c.name) && !/afterpay|deferit/i.test(t.description || '')) { oneOffs.push({ t, c, amt }); if (!rptOne) continue; }
     if (!c) { unsorted += amt; addDetail('Not yet sorted', tidy(t.description), amt); continue; }
     addDetail(c.name, /afterpay|deferit/i.test(t.description || '') ? `${/afterpay/i.test(t.description) ? 'Afterpay' : 'Deferit'} payments from the bank` : tidy(t.description), amt);
     const bp = /afterpay|deferit/i.exec(t.description || ''); if (bp) bnplPaidM[bp[0].toLowerCase()] = (bnplPaidM[bp[0].toLowerCase()] || 0) + amt;
@@ -2432,6 +2457,15 @@ async function reportView() {
       for (const { i, c } of loose) put(c, `${cleanMerchant(i.merchant) || 'Shop'} — still to pay on ${provName(i.debt_id)}`, Number(i.amount) * sh / months, i.debt_id);
     }
   }
+  for (const i of lumpy) {
+    const c = cats.get(i.category_id), amt = i.amount * PER_MONTH[i.frequency] * shareFor(i.split, who);
+    if (amt < 0.005) continue;
+    const g = EXP_GROUPS.find(([, re]) => re.test(c.name))[0];
+    if (!exp.has(g)) exp.set(g, new Map());
+    exp.get(g).set(c.name, (exp.get(g).get(c.name) || 0) + amt);
+    addDetail(c.name, `${i.name} — paid ${i.frequency === 'bimonthly' ? 'every 2 months' : i.frequency}, spread evenly`, amt);
+  }
+  const oneOffM = sum(oneOffs, o => o.amt);
   if (unsorted > 0.5) { if (!exp.has('Personal & other')) exp.set('Personal & other', new Map()); exp.get('Personal & other').set('Not yet sorted', unsorted); }
   const extraFood = Number(notes.extra_food_weekly || 0) * 52 / 12 * shareFor(cache.settings?.default_split, who);
   const extraOther = Number(notes.extra_other_weekly || 0) * 52 / 12 * shareFor(cache.settings?.default_split, who);
@@ -2447,6 +2481,8 @@ async function reportView() {
     let inn = 0, out = 0;
     for (const t of list) {
       const c = cats.get(t.category_id);
+      if (xfer.has(t)) continue;
+      if (isRefund(t)) { out -= t.amount * shareFor(t.recurring_item_id ? itemSplit.get(t.recurring_item_id) : cache.settings?.default_split, who); continue; }
       if (t.amount > 0) { if (c?.kind !== 'transfer') inn += t.amount * shareFor(t.recurring_item_id ? itemSplit.get(t.recurring_item_id) : acctSplit(t.account_id), who); }
       else if (!(c && (c.kind === 'transfer' || c.kind === 'income' || DEBT_CATS.test(c.name) || rptOff.has(c.name)))) out += -t.amount * shareFor(t.recurring_item_id ? itemSplit.get(t.recurring_item_id) : cache.settings?.default_split, who);
     }
@@ -2523,6 +2559,7 @@ async function reportView() {
 
     <details class="card rpt" open><summary><h2>3. Living expenses <span class="rpt-total">${M(livingM)} ${per}</span></h2></summary>
       ${rptOff.size ? `<div class="callout no-print-hide">${rptOff.size} categor${rptOff.size === 1 ? 'y is' : 'ies are'} switched off, so every figure on this page leaves ${rptOff.size === 1 ? 'it' : 'them'} out. <button class="small" id="rp-reset">Switch all back on</button></div>` : ''}
+      ${oneOffs.length ? `<div class="callout no-print-hide"><b>${oneOffs.length} one-off purchase${oneOffs.length === 1 ? '' : 's'} of $${ONEOFF}+ ${rptOne ? 'included in' : 'left out of'} the figures</b> (${M(oneOffM)}${per} if counted): ${oneOffs.sort((a, b) => b.amt - a.amt).slice(0, 6).map(o => `${esc(tidy(o.t.description))} ${esc(fmtDate(o.t.txn_date))} ${money(-o.t.amount)}`).join(' · ')}${oneOffs.length > 6 ? ` · +${oneOffs.length - 6} more` : ''}. <button class="small" id="rp-one">${rptOne ? 'Leave them out' : 'Include them'}</button></div>` : ''}
       ${groups.length ? `<table class="list rpt-tbl"><tbody>${groups.map(g => `<tr class="grp"><td><label class="rpt-chk"><input type="checkbox" data-grp="${esc(g.g)}" ${g.lines.every(([n]) => rptOff.has(n)) ? '' : 'checked'} aria-label="Count all of ${esc(g.g)}"> <b>${esc(g.g)}</b></label></td><td class="num"><b>${M(g.total)}</b></td></tr>${g.lines.map(([n, v]) => `<tr class="sub ${rptOff.has(n) ? 'off' : ''}"><td>${detail.has(n) ? `<button class="rpt-x" data-x="${esc(n)}" aria-expanded="${rptOpen.has(n)}" aria-label="Show what is in ${esc(n)}">${rptOpen.has(n) ? '▾' : '▸'}</button>` : '<span class="rpt-x-sp"></span>'}<label class="rpt-chk"><input type="checkbox" data-cat="${esc(n)}" ${rptOff.has(n) ? '' : 'checked'} aria-label="Count ${esc(n)}"> ${esc(n.replace(' (not counted)', ''))}</label></td><td class="num">${M(v)}</td></tr>${rptOpen.has(n) && detail.has(n) ? (l => l.slice(0, 12).map(([lab, d]) => `<tr class="det ${rptOff.has(n) ? 'off' : ''}"><td>${esc(lab)} <span class="hint">${d.n > 1 ? d.n + ' items' : '1 item'}</span></td><td class="num">${M(d.v)}</td></tr>`).join('') + (l.length > 12 ? `<tr class="det"><td class="hint">+ ${l.length - 12} smaller</td><td class="num">${M(sum(l.slice(12), e => e[1].v))}</td></tr>` : ''))([...detail.get(n).entries()].sort((a, b) => b[1].v - a[1].v)) : ''}`).join('')}`).join('')}</tbody>
         <tfoot><tr class="total"><td><b>Total living expenses</b></td><td class="num"><b>${M(livingM)}</b></td></tr></tfoot></table>
         ${foodFromBank < 80 * 52 / 12 && !extraFood ? `<div class="callout">Groceries from the bank are only about ${moneyRound(foodFromBank * 12 / 52)} a week for the household. If food is bought with Afterpay, cash or a card that isn’t in the app, put a realistic weekly amount in <b>Your answers</b> below — otherwise your living costs will look too low and the offer too high.</div>` : ''}
@@ -2533,7 +2570,7 @@ async function reportView() {
         ${months.map(r => `<tr><td>${esc(monthName(r.d))}</td><td class="num">${money(fx(r.inn))}</td><td class="num">${money(fx(r.out))}</td><td class="num ${r.left < 0 ? 'neg' : ''}">${money(fx(r.left))}</td></tr>`).join('')}
         </tbody><tfoot><tr class="total"><td><b>Average</b></td><td class="num"><b>${M(monthsTot.inn / N)}</b></td><td class="num"><b>${M(monthsTot.out / N)}</b></td><td class="num"><b class="${monthsTot.inn < monthsTot.out ? 'neg' : ''}">${M((monthsTot.inn - monthsTot.out) / N)}</b></td></tr>
         ${curRow ? `<tr class="sub"><td>${esc(monthName(curRow.d))} so far</td><td class="num">${money(fx(curRow.inn))}</td><td class="num">${money(fx(curRow.out))}</td><td class="num ${curRow.left < 0 ? 'neg' : ''}">${money(fx(curRow.left))}</td></tr>` : ''}</tfoot></table>
-      <p class="hint">Per ${F.label}, ${esc(rangeTxt)}. Money in and spending leave out transfers between your accounts, bounced payments and debt repayments. ${curRow ? 'The current month is shown separately and not averaged.' : ''}</p>
+      <p class="hint">Per ${F.label}, ${esc(rangeTxt)}. Money in and spending leave out transfers between your accounts${xfer.size ? ` (${xfer.size / 2} matched pair${xfer.size === 2 ? '' : 's'} found automatically)` : ''}, bounced payments and debt repayments. Refunds reduce the category they came from, bills paid every 2+ months are spread evenly, and single purchases of $${ONEOFF}+ that are not regular costs are listed separately. ${curRow ? 'The current month is shown separately and not averaged.' : ''}</p>
     </details>
 
     <details class="card rpt" open><summary><h2>4. Debts <span class="rpt-total">${money(debtTotal)}</span></h2></summary>
@@ -2582,6 +2619,7 @@ async function reportView() {
   view.querySelectorAll('button[data-x]').forEach(b => b.onclick = () => { rptOpen.has(b.dataset.x) ? rptOpen.delete(b.dataset.x) : rptOpen.add(b.dataset.x); reportView(); });
   view.querySelectorAll('input[data-cat]').forEach(c => c.onchange = () => { c.checked ? rptOff.delete(c.dataset.cat) : rptOff.add(c.dataset.cat); reportView(); });
   view.querySelectorAll('input[data-grp]').forEach(c => c.onchange = () => { const g = groups.find(x => x.g === c.dataset.grp); g.lines.forEach(([n]) => c.checked ? rptOff.delete(n) : rptOff.add(n)); reportView(); });
+  $('#rp-one')?.addEventListener('click', () => { rptOne = !rptOne; reportView(); });
   $('#rp-reset')?.addEventListener('click', () => { rptOff.clear(); reportView(); });
   view.querySelectorAll('[data-rr]').forEach(b => b.onclick = () => { rptRange = Number(b.dataset.rr); try { localStorage.setItem('rptRange', rptRange); } catch {} reportView(); });
   view.querySelectorAll('[data-rf]').forEach(b => b.onclick = () => { rptFreq = b.dataset.rf; try { localStorage.setItem('rptFreq', rptFreq); } catch {} reportView(); });
@@ -2602,7 +2640,7 @@ async function reportView() {
     line('Housing', hasMortgage ? 'own home with a mortgage' : 'see notes');
     for (const [k, q] of RPT_QUESTIONS) if (notes[k]) line(q.replace(/\?$/, ''), notes[k]);
     L.push('', `INCOME ${M(incomeM)}`); income.forEach(x => line(`  ${x.name}`, M(x.m)));
-    L.push('', `LIVING EXPENSES ${M(livingM)}${rptOff.size ? ` (excluding: ${[...rptOff].join(', ')})` : ''}`); groups.forEach(g => line(`  ${g.g}`, M(g.total)));
+    L.push('', `LIVING EXPENSES ${M(livingM)}${rptOff.size ? ` (excluding: ${[...rptOff].join(', ')})` : ''}`); groups.forEach(g => line(`  ${g.g}`, M(g.total))); if (oneOffs.length) line(`  ${rptOne ? 'Includes' : 'Not included:'} ${oneOffs.length} one-off purchase${oneOffs.length === 1 ? '' : 's'} of $${ONEOFF}+`, M(oneOffM));
     L.push('', `DEBTS ${money(debtTotal)} owed, repayments ${M(repM)}`); debts.forEach(d => line(`  ${d.creditor}`, `${money(d.bal)} owed${d.arr ? `, ${money(d.arr)} overdue` : ''}${d.repM ? `, repayment ${M(d.repM)}` : ''}${d.hardship_status && d.hardship_status !== 'none' ? `, hardship: ${label(d.hardship_status)}` : ''}`));
     L.push('', `MONTH BY MONTH (per ${F.label})`); months.forEach(r => line(`  ${monthName(r.d)}`, `in ${money(fx(r.inn))}, spent ${money(fx(r.out))}, left ${money(fx(r.left))}`));
     line('  Average', `in ${M(monthsTot.inn / N)}, spent ${M(monthsTot.out / N)}, left ${M((monthsTot.inn - monthsTot.out) / N)}`);
