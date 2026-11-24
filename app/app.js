@@ -1,11 +1,11 @@
 import { createClient } from 'https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2/+esm';
-import { SUPABASE_URL, SUPABASE_PUBLISHABLE_KEY } from './config.js?v=202611241120';
-import { parseBankCsv, parseWestpacActivity, parseScannedPdf, parseLatitudeStatement, isLatitudeStatement, splitAccounts, linesFromItems, parseBankPaste } from './csv.js?v=202611241120';
-import { readPayslip, toLines } from './payslip.js?v=202611241120';
-import { readBill } from './bill.js?v=202611241120';
-import { cleanMerchant, parseAfterpay, parseDeferit, mergeRows, isKnown, shopKey, bestShopKey, detectBnplPdf, parseBnplPdf, resolveTruncated, detectBnplPaste, parseBnplPaste } from './bnpl.js?v=202611241120';
-import { toast, softDelete, busy, friendlyError, watchOnline, info, wireInfoTips, skeleton, wireInstall, applyPrefs, settingsMenu, prefs, setPref, store } from './ui.js?v=202611241120';
-import { columnChart, hbarChart, lineChart, SERIES, moneyRound, moneyCompact } from './charts.js?v=202611241120';
+import { SUPABASE_URL, SUPABASE_PUBLISHABLE_KEY } from './config.js?v=202611241140';
+import { parseBankCsv, parseWestpacActivity, parseScannedPdf, parseLatitudeStatement, isLatitudeStatement, splitAccounts, linesFromItems, parseBankPaste } from './csv.js?v=202611241140';
+import { readPayslip, toLines } from './payslip.js?v=202611241140';
+import { readBill } from './bill.js?v=202611241140';
+import { cleanMerchant, parseAfterpay, parseDeferit, mergeRows, isKnown, shopKey, bestShopKey, detectBnplPdf, parseBnplPdf, resolveTruncated, detectBnplPaste, parseBnplPaste } from './bnpl.js?v=202611241140';
+import { toast, softDelete, busy, friendlyError, watchOnline, info, wireInfoTips, skeleton, wireInstall, applyPrefs, settingsMenu, prefs, setPref, store } from './ui.js?v=202611241140';
+import { columnChart, hbarChart, lineChart, SERIES, moneyRound, moneyCompact } from './charts.js?v=202611241140';
 
 const sb = createClient(SUPABASE_URL, SUPABASE_PUBLISHABLE_KEY);
 const $ = (s, el = document) => el.querySelector(s);
@@ -50,6 +50,8 @@ const refName = (ref, id) => { if (!id) return '—'; const o = refOptions[ref](
 
 const FREQ = ['once', 'weekly', 'fortnightly', 'monthly', 'bimonthly', 'quarterly', 'yearly'];
 const PER_MONTH = { once: 0, weekly: 52 / 12, fortnightly: 26 / 12, monthly: 1, bimonthly: 1 / 2, quarterly: 1 / 3, yearly: 1 / 12 };
+// the database returns at most 1000 rows per request, so read big lists in pages (a plain .range(0, 9999) would silently stop at 1000)
+const pageAll = async build => { const out = []; for (let from = 0; ; from += 1000) { const p = await q(build().range(from, from + 999)); out.push(...p); if (p.length < 1000) return out; } };
 const sum = (rows, fn) => rows.reduce((t, r) => t + Number(fn(r) || 0), 0);
 
 // ---------- table definitions for the add/edit forms ----------
@@ -2354,12 +2356,12 @@ async function reportView() {
   const rangeTxt = `${fmtDate(m0)} – ${fmtDate(ymd(new Date(new Date(m1) - 864e5)))}`;
   const [items, allTxns, debtsRaw, contacts, bal, ins, inst] = await Promise.all([
     q(sb.from('recurring_items').select('*').eq('is_active', true)),
-    q(sb.from('transactions').select('id, amount, category_id, account_id, txn_date, recurring_item_id, description').gte('txn_date', m0).lt('txn_date', mEnd).range(0, 9999)),
+    pageAll(() => sb.from('transactions').select('id, amount, category_id, account_id, txn_date, recurring_item_id, description').gte('txn_date', m0).lt('txn_date', mEnd).order('txn_date').order('id')),
     q(sb.from('debts').select('*').eq('status', 'active').order('priority').order('current_balance', { ascending: false })),
     q(sb.from('debt_contacts').select('*').order('contact_date', { ascending: false }).limit(200)),
     q(sb.from('v_account_balances').select('*').eq('is_active', true)),
     sb.rpc('insights', { p_days: 28 }).then(r => r.data).catch(() => null),
-    q(sb.from('debt_instalments').select('debt_id, amount, due_date, category_id, merchant, instalment_no, instalments_total').eq('is_paid', false).range(0, 4999)),
+    pageAll(() => sb.from('debt_instalments').select('debt_id, amount, due_date, category_id, merchant, instalment_no, instalments_total').eq('is_paid', false).order('due_date').order('id')),
   ]);
   const txns = allTxns.filter(t => t.txn_date < m1), curTxns = allTxns.filter(t => t.txn_date >= m1);
   const notes = { ...(cache.settings?.report || {}) };
