@@ -1,11 +1,11 @@
 import { createClient } from 'https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2/+esm';
-import { SUPABASE_URL, SUPABASE_PUBLISHABLE_KEY } from './config.js?v=202611240900';
-import { parseBankCsv, parseWestpacActivity, parseScannedPdf, parseLatitudeStatement, isLatitudeStatement, splitAccounts, linesFromItems, parseBankPaste } from './csv.js?v=202611240900';
-import { readPayslip, toLines } from './payslip.js?v=202611240900';
-import { readBill } from './bill.js?v=202611240900';
-import { cleanMerchant, parseAfterpay, parseDeferit, mergeRows, isKnown, shopKey, bestShopKey, detectBnplPdf, parseBnplPdf, resolveTruncated, detectBnplPaste, parseBnplPaste } from './bnpl.js?v=202611240900';
-import { toast, softDelete, busy, friendlyError, watchOnline, info, wireInfoTips, skeleton, wireInstall, applyPrefs, settingsMenu, prefs, setPref, store } from './ui.js?v=202611240900';
-import { columnChart, hbarChart, lineChart, SERIES, moneyRound, moneyCompact } from './charts.js?v=202611240900';
+import { SUPABASE_URL, SUPABASE_PUBLISHABLE_KEY } from './config.js?v=202611241030';
+import { parseBankCsv, parseWestpacActivity, parseScannedPdf, parseLatitudeStatement, isLatitudeStatement, splitAccounts, linesFromItems, parseBankPaste } from './csv.js?v=202611241030';
+import { readPayslip, toLines } from './payslip.js?v=202611241030';
+import { readBill } from './bill.js?v=202611241030';
+import { cleanMerchant, parseAfterpay, parseDeferit, mergeRows, isKnown, shopKey, bestShopKey, detectBnplPdf, parseBnplPdf, resolveTruncated, detectBnplPaste, parseBnplPaste } from './bnpl.js?v=202611241030';
+import { toast, softDelete, busy, friendlyError, watchOnline, info, wireInfoTips, skeleton, wireInstall, applyPrefs, settingsMenu, prefs, setPref, store } from './ui.js?v=202611241030';
+import { columnChart, hbarChart, lineChart, SERIES, moneyRound, moneyCompact } from './charts.js?v=202611241030';
 
 const sb = createClient(SUPABASE_URL, SUPABASE_PUBLISHABLE_KEY);
 const $ = (s, el = document) => el.querySelector(s);
@@ -2358,7 +2358,7 @@ async function reportView() {
     q(sb.from('debt_contacts').select('*').order('contact_date', { ascending: false }).limit(200)),
     q(sb.from('v_account_balances').select('*').eq('is_active', true)),
     sb.rpc('insights', { p_days: 28 }).then(r => r.data).catch(() => null),
-    q(sb.from('debt_instalments').select('debt_id, amount, due_date, category_id, merchant').eq('is_paid', false).range(0, 4999)),
+    q(sb.from('debt_instalments').select('debt_id, amount, due_date, category_id, merchant, instalment_no, instalments_total').eq('is_paid', false).range(0, 4999)),
   ]);
   const txns = allTxns.filter(t => t.txn_date < m1), curTxns = allTxns.filter(t => t.txn_date >= m1);
   const notes = { ...(cache.settings?.report || {}) };
@@ -2398,23 +2398,38 @@ async function reportView() {
     if (!exp.has(g)) exp.set(g, new Map());
     exp.get(g).set(c.name, (exp.get(g).get(c.name) || 0) + amt);
   }
-  // Afterpay/Deferit shopping still to pay: counted by what it was spent on, at the rate it is being paid off.
-  // Paid (matched) instalments are already in the bank rows above, and the amount is taken off the BNPL repayment line, so nothing is counted twice.
+  // Afterpay/Deferit shopping: each purchase is counted ONCE, at its full price, by what it was spent on. A pay-in-4 purchase is spread over 6 weeks
+  // (4 instalments, 14 days apart), so the purchases still being paid off are the last 6 weeks of buying: price ÷ 6 weeks gives the monthly rate.
+  // That is the real cost of the shopping rather than a spread-out repayment. Rows saved without their "x of 4" fall back to unpaid ÷ months left.
+  // Bank payments to Afterpay/Deferit stay in Debts, and the amount counted here is taken off that repayment line, so nothing is counted twice.
   let instM = 0;
   if (inst.length) {
-    const lastDue = inst.reduce((m, i) => i.due_date > m ? i.due_date : m, '');
-    const months = Math.max(1, (new Date(lastDue) - new Date(today())) / 864e5 / 30.44);
     const provOf = new Map(debtsRaw.map(d => [d.id, (d.creditor || '').split(' ')[0].toLowerCase()]));
+    const provName = id => (provOf.get(id) || 'BNPL').replace(/^./, x => x.toUpperCase());
+    const day = d => Math.round(new Date(d) / 864e5);
+    const sh = shareFor(cache.settings?.default_split, who);
+    const purchases = [], loose = [];
     for (const i of inst) {
       const c = cats.get(i.category_id);
       if (!c || c.kind !== 'expense' || DEBT_CATS.test(c.name)) continue;
-      const amt = Number(i.amount) * shareFor(cache.settings?.default_split, who) / months;
+      if (!i.instalment_no || !i.instalments_total) { loose.push({ i, c }); continue; }
+      const pdate = day(i.due_date) - (i.instalment_no - 1) * 14, amount = Number(i.amount), key = shopKey(i.merchant);
+      let p = purchases.find(x => x.debt === i.debt_id && x.key === key && x.pdate === pdate && Math.abs(x.amount - amount) < 0.06 && !x.ns.has(i.instalment_no));
+      if (!p) { p = { debt: i.debt_id, key, pdate, amount, ns: new Set(), total: i.instalments_total, merchant: i.merchant, c }; purchases.push(p); }
+      p.ns.add(i.instalment_no);
+    }
+    const put = (c, label, amt, provId) => {
       const g = EXP_GROUPS.find(([, re]) => re.test(c.name))[0];
       if (!exp.has(g)) exp.set(g, new Map());
       exp.get(g).set(c.name, (exp.get(g).get(c.name) || 0) + amt);
-      const pv = provOf.get(i.debt_id); if (pv) bnplPaidM[pv] = (bnplPaidM[pv] || 0) + amt;
-      addDetail(c.name, `${cleanMerchant(i.merchant) || 'Shop'} — still to pay on ${(provOf.get(i.debt_id) || 'BNPL').replace(/^./, x => x.toUpperCase())}`, amt);
-      instM += amt;
+      const pv = provOf.get(provId); if (pv) bnplPaidM[pv] = (bnplPaidM[pv] || 0) + amt;
+      addDetail(c.name, label, amt); instM += amt;
+    };
+    for (const p of purchases) put(p.c, `${cleanMerchant(p.merchant) || 'Shop'} — bought on ${provName(p.debt)}`, p.amount * p.total * sh * 30.44 / (p.total * 14), p.debt);
+    if (loose.length) {
+      const lastDue = loose.reduce((m, x) => x.i.due_date > m ? x.i.due_date : m, '');
+      const months = Math.max(1, (new Date(lastDue) - new Date(today())) / 864e5 / 30.44);
+      for (const { i, c } of loose) put(c, `${cleanMerchant(i.merchant) || 'Shop'} — still to pay on ${provName(i.debt_id)}`, Number(i.amount) * sh / months, i.debt_id);
     }
   }
   if (unsorted > 0.5) { if (!exp.has('Personal & other')) exp.set('Personal & other', new Map()); exp.get('Personal & other').set('Not yet sorted', unsorted); }
@@ -2511,7 +2526,7 @@ async function reportView() {
       ${groups.length ? `<table class="list rpt-tbl"><tbody>${groups.map(g => `<tr class="grp"><td><label class="rpt-chk"><input type="checkbox" data-grp="${esc(g.g)}" ${g.lines.every(([n]) => rptOff.has(n)) ? '' : 'checked'} aria-label="Count all of ${esc(g.g)}"> <b>${esc(g.g)}</b></label></td><td class="num"><b>${M(g.total)}</b></td></tr>${g.lines.map(([n, v]) => `<tr class="sub ${rptOff.has(n) ? 'off' : ''}"><td>${detail.has(n) ? `<button class="rpt-x" data-x="${esc(n)}" aria-expanded="${rptOpen.has(n)}" aria-label="Show what is in ${esc(n)}">${rptOpen.has(n) ? '▾' : '▸'}</button>` : '<span class="rpt-x-sp"></span>'}<label class="rpt-chk"><input type="checkbox" data-cat="${esc(n)}" ${rptOff.has(n) ? '' : 'checked'} aria-label="Count ${esc(n)}"> ${esc(n.replace(' (not counted)', ''))}</label></td><td class="num">${M(v)}</td></tr>${rptOpen.has(n) && detail.has(n) ? (l => l.slice(0, 12).map(([lab, d]) => `<tr class="det ${rptOff.has(n) ? 'off' : ''}"><td>${esc(lab)} <span class="hint">${d.n > 1 ? d.n + ' items' : '1 item'}</span></td><td class="num">${M(d.v)}</td></tr>`).join('') + (l.length > 12 ? `<tr class="det"><td class="hint">+ ${l.length - 12} smaller</td><td class="num">${M(sum(l.slice(12), e => e[1].v))}</td></tr>` : ''))([...detail.get(n).entries()].sort((a, b) => b[1].v - a[1].v)) : ''}`).join('')}`).join('')}</tbody>
         <tfoot><tr class="total"><td><b>Total living expenses</b></td><td class="num"><b>${M(livingM)}</b></td></tr></tfoot></table>
         ${foodFromBank < 80 * 52 / 12 && !extraFood ? `<div class="callout">Groceries from the bank are only about ${moneyRound(foodFromBank * 12 / 52)} a week for the household. If food is bought with Afterpay, cash or a card that isn’t in the app, put a realistic weekly amount in <b>Your answers</b> below — otherwise your living costs will look too low and the offer too high.</div>` : ''}
-        <p class="hint">Average actually spent over ${N === 1 ? 'the last full month' : `the last ${N} full months`} (${esc(rangeTxt)}); the current month is left out because it is only part-way through. Mortgage, loans and Afterpay are in Debts below, not here.${sum(Object.values(bnplPaidM), v => v) > 0.5 ? ' Afterpay and Deferit shopping is counted here by what it was spent on (payments matched to a shop, plus the instalments still to pay, at the rate they are being paid off) and taken off the repayment shown for those debts, so nothing is counted twice.' : ''}${unsorted > 0.5 ? ` ${M(unsorted)} ${per} isn’t sorted into a category yet — sorting it on <b>To sort</b> makes this more accurate.` : ''}</p>`
+        <p class="hint">Average actually spent over ${N === 1 ? 'the last full month' : `the last ${N} full months`} (${esc(rangeTxt)}); the current month is left out because it is only part-way through. Mortgage, loans and Afterpay are in Debts below, not here.${sum(Object.values(bnplPaidM), v => v) > 0.5 ? ' Afterpay and Deferit shopping is counted here by what it was spent on: each purchase still being paid off counts once at its full price, spread over the 6 weeks the instalments run (so about 6 weeks of buying), and the amount is taken off the repayment shown for those debts, so nothing is counted twice.' : ''}${unsorted > 0.5 ? ` ${M(unsorted)} ${per} isn’t sorted into a category yet — sorting it on <b>To sort</b> makes this more accurate.` : ''}</p>`
         : '<p class="empty">No spending in this period yet — import your statements.</p>'}
       <h3 style="margin-top:1.25rem">Month by month</h3>
       <table class="list rpt-tbl"><thead><tr><th>Month</th><th class="num">Money in</th><th class="num">Spending</th><th class="num">Left over</th></tr></thead><tbody>
