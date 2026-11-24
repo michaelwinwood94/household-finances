@@ -1,11 +1,11 @@
 import { createClient } from 'https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2/+esm';
-import { SUPABASE_URL, SUPABASE_PUBLISHABLE_KEY } from './config.js?v=202611241250';
-import { parseBankCsv, parseWestpacActivity, parseScannedPdf, parseLatitudeStatement, isLatitudeStatement, splitAccounts, linesFromItems, parseBankPaste } from './csv.js?v=202611241250';
-import { readPayslip, toLines } from './payslip.js?v=202611241250';
-import { readBill } from './bill.js?v=202611241250';
-import { cleanMerchant, parseAfterpay, parseDeferit, mergeRows, isKnown, shopKey, bestShopKey, detectBnplPdf, parseBnplPdf, resolveTruncated, detectBnplPaste, parseBnplPaste } from './bnpl.js?v=202611241250';
-import { toast, softDelete, busy, friendlyError, watchOnline, info, wireInfoTips, skeleton, wireInstall, applyPrefs, settingsMenu, prefs, setPref, store } from './ui.js?v=202611241250';
-import { columnChart, hbarChart, lineChart, SERIES, moneyRound, moneyCompact } from './charts.js?v=202611241250';
+import { SUPABASE_URL, SUPABASE_PUBLISHABLE_KEY } from './config.js?v=202611241330';
+import { parseBankCsv, parseWestpacActivity, parseScannedPdf, parseLatitudeStatement, isLatitudeStatement, splitAccounts, linesFromItems, parseBankPaste } from './csv.js?v=202611241330';
+import { readPayslip, toLines } from './payslip.js?v=202611241330';
+import { readBill } from './bill.js?v=202611241330';
+import { cleanMerchant, parseAfterpay, parseDeferit, mergeRows, isKnown, shopKey, bestShopKey, detectBnplPdf, parseBnplPdf, resolveTruncated, detectBnplPaste, parseBnplPaste } from './bnpl.js?v=202611241330';
+import { toast, softDelete, busy, friendlyError, watchOnline, info, wireInfoTips, skeleton, wireInstall, applyPrefs, settingsMenu, prefs, setPref, store } from './ui.js?v=202611241330';
+import { columnChart, hbarChart, lineChart, SERIES, moneyRound, moneyCompact } from './charts.js?v=202611241330';
 
 const sb = createClient(SUPABASE_URL, SUPABASE_PUBLISHABLE_KEY);
 const $ = (s, el = document) => el.querySelector(s);
@@ -656,13 +656,16 @@ async function dashboard() {
             ${u.direction === 'out' && d <= 7 ? `<button class="small mark-paid" data-id="${u.item_id}" data-due="${u.due_date}">Paid</button>` : '<span></span>'}</li>`; }).join('')}</ul>`
           : '<p class="empty">Nothing due in the next 14 days.</p>'}
       </section>
-      <section class="card"><div class="sec-head"><div><h2>Where the money went</h2><p class="hint">${personView === 'all' ? 'Household spending' : esc(personName()) + "'s share of spending"} by category</p></div>
+      <details class="card fold" data-fold="spend"><summary><h2>Where the money went</h2><span class="fold-sum">This month out ${moneyRound(thisMonth.money_out || 0)}</span></summary>
+        <div class="sec-head"><div><p class="hint">${personView === 'all' ? 'Household spending' : esc(personName()) + "'s share of spending"} by category</p></div>
           <div class="seg" role="tablist">${[['this', 'This month'], ['last', 'Last month'], ['avg3', '3-month avg']].map(([k, l]) => `<button class="${spendPeriod === k ? 'on' : ''}" data-period="${k}">${l}</button>`).join('')}</div></div>
-        <div id="spend-chart"></div></section>
+        <div id="spend-chart"></div></details>
     </div>
 
-    <section class="card"><div class="sec-head"><div><h2>Money in vs money out</h2><p class="hint">Household, by month · transfers and loan interest not counted</p></div></div>
-      <div id="flow-chart"></div></section>`;
+    <details class="card fold" data-fold="flow"><summary><h2>Money in vs money out</h2><span class="fold-sum">This month in ${moneyRound(thisMonth.money_in || 0)} · out ${moneyRound(thisMonth.money_out || 0)}</span></summary>
+      <p class="hint">Household, by month · transfers and loan interest not counted</p>
+      <div id="flow-chart"></div></details>`;
+  view.querySelectorAll('details.fold').forEach(d => { try { d.open = localStorage.getItem('fold-' + d.dataset.fold) === '1'; } catch {} d.addEventListener('toggle', () => { try { localStorage.setItem('fold-' + d.dataset.fold, d.open ? '1' : '0'); } catch {} }); });
 
   // charts
   const months = cash.slice().reverse();
@@ -3010,10 +3013,33 @@ let searchT;
 function openSearch() { $('#search').classList.remove('hidden'); $('#search-input').value = ''; $('#search-results').innerHTML = '<p class="hint">Type at least 2 letters.</p>'; $('#search-input').focus(); }
 function closeSearch() { $('#search').classList.add('hidden'); }
 $('#search-btn').onclick = openSearch;
+
+// quick actions: the "+" button (or the + key) opens a short list of the things done most often, each with its key
+const QUICK = [
+  ['N', 'New bill', async () => { if (await openForm('bills', null, { direction: 'out' })) show(currentView); }],
+  ['E', 'New income', async () => { if (await openForm('income', null, { direction: 'in' })) show(currentView); }],
+  ['I', 'Import files', () => show('import')],
+  ['P', 'Paste page text', async () => { await show('import'); const t = $('#p-text'); if (t) { t.scrollIntoView({ block: 'center' }); t.focus(); } }],
+  ['S', 'Sort transactions', () => show('sort')],
+  ['C', 'Log a creditor call', () => show('debts')],
+  ['R', 'Open the Report', () => show('report')],
+  ['/', 'Search everything', openSearch],
+];
+function closeQuick() { $('#quick-sheet')?.classList.add('hidden'); $('#quick-btn')?.setAttribute('aria-expanded', 'false'); $('#quick-btn')?.classList.remove('open'); }
+function openQuick() {
+  closeSheets(); const sh = $('#quick-sheet');
+  sh.innerHTML = `<h3>Quick actions</h3>${QUICK.map(([k, l], i) => `<button type="button" data-q="${i}"><span>${esc(l)}</span><kbd>${esc(k)}</kbd></button>`).join('')}`;
+  sh.querySelectorAll('button').forEach(b => b.onclick = () => { closeQuick(); QUICK[b.dataset.q][2](); });
+  sh.classList.remove('hidden'); $('#quick-btn').setAttribute('aria-expanded', 'true'); $('#quick-btn').classList.add('open'); sh.querySelector('button')?.focus();
+}
+$('#quick-btn').onclick = e => { e.stopPropagation(); $('#quick-sheet').classList.contains('hidden') ? openQuick() : closeQuick(); };
+document.addEventListener('click', e => { if (!e.target.closest('#quick-sheet, #quick-btn')) closeQuick(); });
 $('#search').addEventListener('click', e => { if (e.target.id === 'search') closeSearch(); });
 document.addEventListener('keydown', e => {
   if (!session) return;
-  if (e.key === 'Escape') { closeSearch(); closeSheets(); }
+  if (e.key === 'Escape') { closeSearch(); closeSheets(); closeQuick(); }
+  if (!$('#quick-sheet').classList.contains('hidden') && !e.ctrlKey && !e.metaKey && !e.altKey) { const hit = QUICK.find(([k]) => k.toLowerCase() === e.key.toLowerCase()); if (hit) { e.preventDefault(); closeQuick(); hit[2](); return; } }
+  if (e.key === '+' && !e.ctrlKey && !e.metaKey && !/input|textarea|select/i.test(document.activeElement.tagName) && !document.querySelector('dialog[open]')) { e.preventDefault(); openQuick(); return; }
   if ((e.key === '/' && !/input|textarea|select/i.test(document.activeElement.tagName)) || (e.key.toLowerCase() === 'k' && (e.ctrlKey || e.metaKey))) { e.preventDefault(); openSearch(); }
 });
 $('#search-input').oninput = e => { clearTimeout(searchT); searchT = setTimeout(() => runSearch(e.target.value.trim()), 250); };
@@ -3052,14 +3078,14 @@ async function enter(s) {
   await loadLookups();
   $('#whoswitch').classList.remove('hidden'); renderWhoSwitch();
   welcomeForm();
-  $('#tools').classList.remove('hidden'); $('#bottomnav').classList.remove('hidden');
+  $('#tools').classList.remove('hidden'); $('#bottomnav').classList.remove('hidden'); $('#quick-btn').classList.remove('hidden');
   const start = location.hash.slice(1);
   show(VIEWS[start] ? start : 'dashboard');
 }
 function leave() {
   session = null; view.innerHTML = '';
   $('#auth').classList.remove('hidden'); $('#tabs').classList.add('hidden'); $('#signout').classList.add('hidden'); $('#whoswitch')?.classList.add('hidden');
-  $('#tools').classList.add('hidden'); $('#bottomnav').classList.add('hidden');
+  $('#tools').classList.add('hidden'); $('#bottomnav').classList.add('hidden'); $('#quick-btn').classList.add('hidden'); closeQuick();
 }
 $('#authform').onsubmit = async e => {
   e.preventDefault(); const msg = $('#authmsg'); msg.className = 'msg'; msg.textContent = 'Signing in…';

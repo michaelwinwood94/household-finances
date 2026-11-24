@@ -15,7 +15,7 @@
   <link rel="preconnect" href="https://fonts.googleapis.com">
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
   <link href="https://fonts.googleapis.com/css2?family=Atkinson+Hyperlegible:wght@400;700&display=swap" rel="stylesheet">
-  <link rel="stylesheet" href="styles.css?v=202611241250">
+  <link rel="stylesheet" href="styles.css?v=202611241330">
 </head>
 <body>
   <header class="topbar">
@@ -93,7 +93,9 @@
     <button data-view="report">Report</button><button data-view="links">Links</button><button data-view="members">Household</button><button data-view="setup">Setup</button>
     <button class="signout-m" id="signout-m" type="button">Sign out</button>
   </div>
+  <button id="quick-btn" class="quick-fab hidden" type="button" aria-label="Quick actions" aria-expanded="false" title="Quick actions (press +)">+</button>
+  <div id="quick-sheet" class="quick-sheet hidden" role="dialog" aria-label="Quick actions"></div>
   <div id="toast" class="toast" role="status" aria-live="polite"></div>
-  <script type="module" src="app.js?v=202611241250"></script>
+  <script type="module" src="app.js?v=202611241330"></script>
 </body>
 </html>
